@@ -1,0 +1,72 @@
+model:
+  base_learning_rate: 5.0e-5   # set to target_lr by starting main.py with '--scale_lr False'
+  target: models.core.Restorer
+  params:
+    ckpt_path: None
+    monitor: 'val_loss'
+    ddconfig:
+      resolution: 256
+      emb_ch: 4
+      input_ch: 3
+      output_ch: 3
+      num_res_blocks: 2
+      attn_resolution: [ 8,4,2 ]
+      ch_mult: [1,2,4,4]
+
+    scheduler_config: # 10000 warmup steps
+      target: utils.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [ 1.]
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 12
+    train:
+      target: ldm.data.crater.DTM_Train
+      params:
+        db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
+        channels: 3
+        shape: [960,960]
+        crop_sz: [256,256]
+        crop_part: [4,4]
+
+    validation:
+      target: ldm.data.crater.DTM_Validate
+      params:
+        db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
+        channels: 3
+        shape: [960,960]
+        crop_sz: [256,256]
+        crop_part: [4,4]
+        augment_s: False
+        augment_t: False
+    
+    test:
+      target: ldm.data.crater.DTM_Test
+      params:
+        db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
+        channels: 3
+        shape: [960,960]
+        crop_sz: [256,256]
+        crop_part: [4,4]
+        augment_s: False
+        augment_t: False
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 5000
+        max_images: 8
+        increase_log_steps: False
+
+
+  trainer:
+    benchmark: True
+    accumulate_grad_batches: 1
