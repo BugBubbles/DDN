@@ -1,0 +1,28 @@
+name: ldm
+channels:
+  - conda-forge
+  - nvidia
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - cudatoolkit=11.8
+  - numpy
+  - tqdm
+  - debugpy
+  - pytorch==2.2.0 
+  - torchvision==0.17.0 
+  - pip:
+    - albumentations
+    - opencv-python
+    - pudb
+    - imageio
+    - imageio-ffmpeg
+    - pytorch-lightning==2.2.3
+    - omegaconf
+    - test-tube
+    - streamlit
+    - einops
+    - torch-fidelity
+    - -e .
