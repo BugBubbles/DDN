@@ -1,2 +1,2 @@
-from ldm.modules.losses.contperceptual import LPIPSWithDiscriminator
-from ldm.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
+from modules.losses.contperceptual import LPIPSWithDiscriminator
+from modules.losses.vqperceptual import VQLPIPSWithDiscriminator

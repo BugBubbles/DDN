@@ -1,6 +1,8 @@
 from modules.blocks.model import UNet
 import pytorch_lightning as pl
 import torch
+from modules.losses.disnce import DisNCELoss
+from utils import instantiate_from_config
 
 
 class CoreUNet(UNet):
@@ -37,9 +39,20 @@ class CoreUNet(UNet):
 
 
 class Restorer(pl.LightningModule):
-    def __init__(self, *, ignore_keys, ckpt_path, monitor, ddconfig, scheduler_config):
-        self.model = CoreUNet(**ddconfig)
+    def __init__(
+        self,
+        *,
+        ignore_keys=None,
+        ckpt_path,
+        monitor,
+        ddconfig,
+        scheduler_config,
+        lossconfig,
+    ):
+        super().__init__()
+        self.core_unet = CoreUNet(**ddconfig)
         self.use_scheduler = scheduler_config is not None
+        self.loss = instantiate_from_config(lossconfig)
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
         if monitor is not None:
@@ -65,10 +78,71 @@ class Restorer(pl.LightningModule):
         x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
         return x
 
+    def forward(self, inputs):
+        res = self.core_unet(inputs, 0)
+        output = res + inputs
+        return output
+
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, "image")
-        y = self.get_input(batch, "target")
-        y_hat = self.model(x)
-        loss = torch.nn.functional.mse_loss(y_hat, y)
+        x_hat = self(x)
+        loss = torch.nn.functional.mse_loss(x_hat, x)
         self.log("train_loss", loss)
         return loss
+
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
+        x = self.get_input(batch, "image")
+        x_hat = self(x)
+        loss = torch.nn.functional.mse_loss(x_hat, x)
+        self.log("train_loss", loss)
+        return self.log_dict
+
+    def configure_optimizers(self):
+        lr = self.learning_rate
+        opt = torch.optim.Adam(
+            list(self.core_unet.parameters()),
+            lr=lr,
+            betas=(0.5, 0.9),
+        )
+        return opt
+
+    @torch.no_grad()
+    def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
+        log = dict()
+        x = self.get_input(batch, self.first_stage_key)
+        N = min(x.shape[0], N)
+        n_row = min(x.shape[0], n_row)
+        x = x.to(self.device)[:N]
+        log["inputs"] = x
+
+        # get diffusion row
+        diffusion_row = list()
+        x_start = x[:n_row]
+
+        for t in range(self.num_timesteps):
+            if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+                t = repeat(torch.tensor([t]), "1 -> b", b=n_row)
+                t = t.to(self.device).long()
+                noise = torch.randn_like(x_start)
+                x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+                diffusion_row.append(x_noisy)
+
+        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
+
+        if sample:
+            # get denoise row
+            with self.ema_scope("Plotting"):
+                samples, denoise_row = self.sample(
+                    batch_size=N, return_intermediates=True
+                )
+
+            log["samples"] = samples
+            log["denoise_row"] = self._get_rows_from_list(denoise_row)
+
+        if return_keys:
+            if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
+                return log
+            else:
+                return {key: log[key] for key in return_keys}
+        return log

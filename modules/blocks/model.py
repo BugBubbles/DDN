@@ -35,7 +35,7 @@ def nonlinearity(x):
     return x*torch.sigmoid(x)
 
 
-def Normalize(in_channels, num_groups=32):
+def Normalize(in_channels, num_groups=4):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
 
 
@@ -424,7 +424,7 @@ class Encoder(nn.Module):
                                        dropout=dropout)
 
         # end
-        self.norm_out = Normalize(block_in)
+        self.norm_out = Normalize(block_in, num_groups)
         self.conv_out = torch.nn.Conv2d(block_in,
                                         2*z_channels if double_z else z_channels,
                                         kernel_size=3,
@@ -460,7 +460,7 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
+    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks, num_groups, 
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
                  attn_type="vanilla", **ignorekwargs):
@@ -525,7 +525,7 @@ class Decoder(nn.Module):
             self.up.insert(0, up) # prepend to get consistent order
 
         # end
-        self.norm_out = Normalize(block_in)
+        self.norm_out = Normalize(block_in, num_groups)
         self.conv_out = torch.nn.Conv2d(block_in,
                                         out_ch,
                                         kernel_size=3,
@@ -569,7 +569,7 @@ class Decoder(nn.Module):
 
 
 class SimpleDecoder(nn.Module):
-    def __init__(self, in_channels, out_channels, *args, **kwargs):
+    def __init__(self, in_channels, out_channels, num_groups, *args, **kwargs):
         super().__init__()
         self.model = nn.ModuleList([nn.Conv2d(in_channels, in_channels, 1),
                                      ResnetBlock(in_channels=in_channels,
@@ -584,7 +584,7 @@ class SimpleDecoder(nn.Module):
                                      nn.Conv2d(2*in_channels, in_channels, 1),
                                      Upsample(in_channels, with_conv=True)])
         # end
-        self.norm_out = Normalize(in_channels)
+        self.norm_out = Normalize(in_channels, num_groups)
         self.conv_out = torch.nn.Conv2d(in_channels,
                                         out_channels,
                                         kernel_size=3,
@@ -605,7 +605,7 @@ class SimpleDecoder(nn.Module):
 
 
 class UpsampleDecoder(nn.Module):
-    def __init__(self, in_channels, out_channels, ch, num_res_blocks, resolution,
+    def __init__(self, in_channels, out_channels, ch, num_res_blocks, resolution,num_groups,
                  ch_mult=(2,2), dropout=0.0):
         super().__init__()
         # upsampling
@@ -631,7 +631,7 @@ class UpsampleDecoder(nn.Module):
                 curr_res = curr_res * 2
 
         # end
-        self.norm_out = Normalize(block_in)
+        self.norm_out = Normalize(block_in, num_groups)
         self.conv_out = torch.nn.Conv2d(block_in,
                                         out_channels,
                                         kernel_size=3,
