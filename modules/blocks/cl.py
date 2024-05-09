@@ -1,5 +1,5 @@
 import torch.nn as nn
-from modules.blocks.model import ResnetBlock, Downsample, Encoder
+from modules.blocks.model import ResnetBlock, Downsample
 
 
 class Discriminator(nn.Module):
@@ -92,19 +92,17 @@ class Discriminator(nn.Module):
                 if layer_id in layers:
                     # print("%d: adding the output of %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
                     feats.append(feat)
-                else:
-                    # print("%d: skipping %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
-                    pass
                 if layer_id == layers[-1] and encode_only:
                     #                     print('encoder only return features',feats[2].shape)
                     return feats  # return intermediate features alone; stop in the last layers
 
             return feat, feats  # return both output and intermediate features
         """Standard forward."""
-        return self.model(input)
+        return self.model(inputs)
 
 
 class Generator(nn.Module):
+    '''For calculating the Contrastive loss'''
     def __init__(self, input_ch, output_ch, emb_ch=32, num_res_blocks=4):
         super(Generator, self).__init__()
         convs = []
@@ -123,8 +121,6 @@ class Generator(nn.Module):
                 feat = layer(feat)
                 if layer_id in layers:
                     feats.append(feat)
-                else:
-                    pass
                 if layer_id == layers[-1] and encode_only:
                     return feats
             return feat, feats
