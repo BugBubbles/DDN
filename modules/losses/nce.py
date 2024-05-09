@@ -1,12 +1,12 @@
 import torch
-from torch import nn
 from packaging import version
 
 
-class PatchNCELoss(nn.Module):
-    '''
+class PatchNCELoss:
+    """
     Location Contrastive loss
-    '''
+    """
+
     def __init__(self):
         super().__init__()
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(reduction="none")
@@ -17,7 +17,7 @@ class PatchNCELoss(nn.Module):
         )
 
     # feat_q and feat_k: 256 x 256, dim0: num_patches, dim1: feater length
-    def forward(self, feat_q, feat_k):
+    def __call__(self, feat_q, feat_k):
         batchSize = feat_q.shape[0]  # 256
         dim = feat_q.shape[1]  # 256
         feat_k = feat_k.detach()
@@ -67,7 +67,7 @@ class PatchNCELoss(nn.Module):
         return loss
 
 
-class DisNCELoss(nn.Module):
+class DisNCELoss:
     """
     Layer Contrastive loss
     """
@@ -82,7 +82,7 @@ class DisNCELoss(nn.Module):
 
     # feat_B for the background, feat_R for the rain
     # shape: (num_patches * batch_size, feature length)
-    def forward(self, featB, featR):
+    def __call__(self, featB, featR):
         batch_size = featB.shape[0] // self.num_patches_pos
         # if featR.shape[0] != num_patches*batch_size:
         #     raise ValueError('num_patches of rain and background are not equal')

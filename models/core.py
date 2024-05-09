@@ -3,6 +3,7 @@ from modules.patcher.sampler import (
     PatchSampleLocalOneGroup,
     PatchSampleNonlocalOneGroup,
 )
+from modules.blocks.cl import Discriminator, Generator
 from modules.losses.nce import PatchNCELoss, DisNCELoss
 import pytorch_lightning as pl
 import torch
@@ -58,9 +59,11 @@ class Restorer(pl.LightningModule):
         self.local_sampler = PatchSampleLocalOneGroup()
         self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
         self.use_scheduler = scheduler_config is not None
-        self.loss_ = instantiate_from_config(lossconfig)
+        self.main_loss = instantiate_from_config(lossconfig)
         self.loss_loc_ = PatchNCELoss()
         self.loss_layer_ = DisNCELoss()
+        self.mom_gen = Generator(ddconfig["input_ch"], ddconfig["output_ch"])
+        self.mom_dis = Discriminator(ddconfig["input_ch"])
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
         if monitor is not None:

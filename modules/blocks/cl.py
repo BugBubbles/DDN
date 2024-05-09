@@ -10,6 +10,7 @@ class Discriminator(nn.Module):
         n_layers=3,
         norm_layer=nn.BatchNorm2d,
         no_antialias=False,
+        **kwargs
     ):
         """Construct a PatchGAN discriminator
 
@@ -102,8 +103,9 @@ class Discriminator(nn.Module):
 
 
 class Generator(nn.Module):
-    '''For calculating the Contrastive loss'''
-    def __init__(self, input_ch, output_ch, emb_ch=32, num_res_blocks=4):
+    """For calculating the Contrastive loss"""
+
+    def __init__(self, input_ch, output_ch, emb_ch=32, num_res_blocks=4, **kwargs):
         super(Generator, self).__init__()
         convs = []
         convs.append(nn.Conv2d(input_ch, emb_ch, ksize=3, padding=1, stride=1))
