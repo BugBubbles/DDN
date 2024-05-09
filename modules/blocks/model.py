@@ -424,7 +424,7 @@ class Encoder(nn.Module):
                                        dropout=dropout)
 
         # end
-        self.norm_out = Normalize(block_in, num_groups)
+        self.norm_out = Normalize(block_in)
         self.conv_out = torch.nn.Conv2d(block_in,
                                         2*z_channels if double_z else z_channels,
                                         kernel_size=3,
