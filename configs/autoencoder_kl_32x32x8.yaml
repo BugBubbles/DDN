@@ -1,44 +1,40 @@
 model:
-  base_learning_rate: 5.0e-5   # set to target_lr by starting main.py with '--scale_lr False'
-  target: models.core.Restorer
+  base_learning_rate: 4.5e-6
+  target: ldm.models.autoencoder.AutoencoderKL
   params:
-    ckpt_path: 
-    monitor: 'val_loss'
-
+    monitor: "val/rec_loss"
+    embed_dim: 4
+    ckpt_path: /home/xdy_cbf/CODE_cbf/latent-diffusion/logs/2024-05-07T09-56-27_craters-ldm-kl-f8/checkpoints/last.ckpt
     lossconfig:
-      target: modules.losses.LPIPS
+      target: ldm.modules.losses.LPIPSWithDiscriminator
       params:
-        net: 'vgg'
-        model_path: /home/xdy_cbf/CODE_cbf/Destrip/pretrained/lpips/vgg.pth
+        disc_start: 50001
+        kl_weight: 0.000001
+        disc_weight: 0.5
+        disc_in_channels: 4
 
     ddconfig:
+      double_z: True
+      z_channels: 8
       resolution: 256
-      emb_ch: 4
-      input_ch: 3
-      output_ch: 3
+      in_channels: 4
+      out_ch: 4
+      ch: 128
+      ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
       num_res_blocks: 2
-      attn_resolutions: [ 8,4,2 ]
-      ch_mult: [1,2,4,4]
-      use_timestep: False
-
-    scheduler_config: # 10000 warmup steps
-      target: utils.lr_scheduler.LambdaLinearScheduler
-      params:
-        warm_up_steps: [10000]
-        cycle_lengths: [10000000000000]
-        f_start: [1.e-6]
-        f_max: [1.]
-        f_min: [ 1.]
+      attn_resolutions: [ ]
+      dropout: 0.0
 
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 12
+    batch_size: 7
+    wrap: True
     train:
       target: ldm.data.crater.DTM_Train
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
-        channels: 3
+        channels: 4
         shape: [960,960]
         crop_sz: [256,256]
         crop_part: [4,4]
@@ -47,7 +43,7 @@ data:
       target: ldm.data.crater.DTM_Validate
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
-        channels: 3
+        channels: 4
         shape: [960,960]
         crop_sz: [256,256]
         crop_part: [4,4]
@@ -58,7 +54,7 @@ data:
       target: ldm.data.crater.DTM_Test
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
-        channels: 3
+        channels: 4
         shape: [960,960]
         crop_sz: [256,256]
         crop_part: [4,4]
@@ -70,10 +66,9 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 5000
+        batch_frequency: 1000
         max_images: 8
         increase_log_steps: False
-
 
   trainer:
     benchmark: True
