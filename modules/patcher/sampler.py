@@ -16,59 +16,65 @@ class Normalize(nn.Module):
         return out
 
 
-class PatchSampleSquare(nn.Module):
+class PatchSampleLocalOneGroup(nn.Module):
+    """
+    Patch in the same position in different images
+    """
+
     def __init__(
         self,
         use_mlp=False,
         init_gain=0.02,
-        nc=256,
+        emb_ch=256,
         patch_w=4,
     ):
         # potential issues: currently, we use the same patch_ids for multiple images in the batch
-        super(PatchSampleSquare, self).__init__()
+        super(PatchSampleLocalOneGroup, self).__init__()
         self.l2norm = Normalize(2)
         self.use_mlp = use_mlp
-        self.nc = nc  # hard-coded
+        self.emb_ch = emb_ch  # hard-coded
         self.mlp_init = False
         self.init_gain = init_gain
         self.patch_w = patch_w
         self.patch_size = self.patch_w * self.patch_w
 
-    def create_mlp(self, feats):
-        for mlp_id, feat in enumerate(feats):
+    def create_mlp(self, inputs):
+        for mlp_id, feat in enumerate(inputs):
             input_nc = feat.shape[1] * self.patch_size
             mlp = nn.Sequential(
-                *[nn.Linear(input_nc, self.nc), nn.ReLU(), nn.Linear(self.nc, self.nc)]
+                *[
+                    nn.Linear(input_nc, self.emb_ch),
+                    nn.ReLU(),
+                    nn.Linear(self.emb_ch, self.emb_ch),
+                ]
             )
             setattr(self, "mlp_%d" % mlp_id, mlp)
         init.normal_(self, 0.0, self.init_gain)
         self.mlp_init = True
 
-    def forward(self, feats, num_patches=64, patch_ids=None):
+    def forward(
+        self, inputs: list[torch.TensorType], num_patches=64, patch_ids=None | list
+    ):
         return_ids = []
-        return_feats = []
+        outputs = []
         if self.use_mlp and not self.mlp_init:
-            self.create_mlp(feats)
-        for feat_id, feat in enumerate(feats):
-            B, H, W, C = feat.shape[0], feat.shape[2], feat.shape[3], feat.shape[1]
+            self.create_mlp(inputs)
+        for feat_id, feat in enumerate(inputs):
+            B, C, H, W = feat.shape[0], feat.shape[1], feat.shape[2], feat.shape[3]
             # feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2) #(B, H*W, C)
             feat_reshape = feat.permute(0, 2, 3, 1)  # (B, H, W, C)
             sample = torch.zeros(
                 (B, num_patches, self.patch_w * self.patch_w * C),
-                device=feats[0].device,
+                device=inputs[0].device,
             )
             if num_patches > 0:
                 if patch_ids is not None:
                     patch_id = patch_ids[feat_id]
                 else:
                     patch_id = torch.zeros((num_patches, 2), device=feat[0].device)
-                    for i in range(0, num_patches):
-                        patch_id[i, 0] = random.randint(
-                            0, feat_reshape.shape[1] - self.patch_w
-                        )
-                        patch_id[i, 1] = random.randint(
-                            0, feat_reshape.shape[2] - self.patch_w
-                        )
+                    for i in range(num_patches):
+                        patch_id[i, 0] = random.randint(0, H - self.patch_w)
+                        patch_id[i, 1] = random.randint(0, W - self.patch_w)
                     # patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
                 # patch_id shape: 256
                 # x_sample shape: B, num, patchsize, C
@@ -96,43 +102,17 @@ class PatchSampleSquare(nn.Module):
                 x_sample = x_sample.permute(0, 2, 1).reshape(
                     [B, x_sample.shape[-1], H, W]
                 )
-            return_feats.append(x_sample)
-        return return_feats, return_ids
+            outputs.append(x_sample)
+        return outputs, return_ids
 
 
-class PatchSampleNonlocalOneGroup(nn.Module):
-    def __init__(
-        self,
-        use_mlp=False,
-        init_gain=0.02,
-        nc=256,
-    ):
-        # potential issues: currently, we use the same patch_ids for multiple images in the batch
-        super(PatchSampleNonlocalOneGroup, self).__init__()
-        self.l2norm = Normalize(2)
-        self.use_mlp = use_mlp
-        self.nc = nc  # hard-coded
-        self.mlp_init = False
-        self.init_gain = init_gain
-        self.patch_size = 16
-        self.half = 8
-        self.search_size = 40
-        self.stride = 1
+class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
+    """
+    Patch in different positions in different images
+    """
 
-    def create_mlp(self, feats):
-        for mlp_id, feat in enumerate(feats):
-            input_nc = feat.shape[1]
-            mlp = nn.Sequential(
-                *[nn.Linear(input_nc, self.nc), nn.ReLU(), nn.Linear(self.nc, self.nc)]
-            )
-            setattr(self, "mlp_%d" % mlp_id, mlp)
-        init.normal_(self, 0.0, self.init_gain)
-        self.mlp_init = True
-
-    # patch_ids here is different with the former ones
-    # it means the (x,y) loc in 256x256 raw images
-    def forward(self, feats, num_patches=256, patch_ids=None):
-        return_feats = []
+    def forward(self, inputs, num_patches=256, patch_ids=None):
+        outputs = []
         if patch_ids is None:  # calculate the num_patches non-local keys in raw image
             # 1. sample one loc in the img
             # 2. slide window to get patches and patch_ids
@@ -140,13 +120,13 @@ class PatchSampleNonlocalOneGroup(nn.Module):
             # 4. top k and gather locs
 
             # Nonlocal in tensor
-            img = feats[0]
+            img = inputs[0]
             B, H, W = img.shape[0], img.shape[2], img.shape[3]
             sample_loc = [
                 random.randint(self.patch_size, H - self.patch_size),
                 random.randint(self.patch_size, W - self.patch_size),
             ]
-            sample_patch = getTensorPatch(img, sample_loc, self.half)
+            sample_patch = getTensorPatch(img, sample_loc, self.half_)
             locs, patches = getTensorLocs(
                 img,
                 sample_loc,
@@ -162,11 +142,11 @@ class PatchSampleNonlocalOneGroup(nn.Module):
 
             patch_ids = locs[index]
             patch_ids = patch_ids.to(torch.long)
-        # debug_seeNonlocal(feats[0],patch_ids,self.half)
+        # debug_seeNonlocal(inputs[0],patch_ids,self.half_)
         # (num_patches, 2)
         if self.use_mlp and not self.mlp_init:
-            self.create_mlp(feats)
-        for feat_id, feat in enumerate(feats):
+            self.create_mlp(inputs)
+        for feat_id, feat in enumerate(inputs):
             B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
             feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)  # (B, H*W, C)
             feat_patch_loc = torch.floor_divide((patch_ids * H), 256)
@@ -187,51 +167,53 @@ class PatchSampleNonlocalOneGroup(nn.Module):
                 x_sample = x_sample.permute(0, 2, 1).reshape(
                     [B, x_sample.shape[-1], H, W]
                 )
-            return_feats.append(x_sample)
+            outputs.append(x_sample)
         return_ids = patch_ids
-        return return_feats, return_ids
+        return outputs, return_ids
 
 
-def getNumpyPatch(ImgNumpy, loc, half):
-    return ImgNumpy[loc[0] - half : loc[0] + half, loc[1] - half : loc[1] + half, :]
+def getNumpyPatch(ImgNumpy, loc, half_):
+    return ImgNumpy[loc[0] - half_ : loc[0] + half_, loc[1] - half_ : loc[1] + half_, :]
 
 
-def getTensorLocs(tensor, center_patch_loc, patch_size, search_size, stride, device):
+def getTensorLocs(tensor, center_patch_loc, patch_w, search_size, stride, device):
     height, width = tensor.shape[2], tensor.shape[3]
-    half = int(patch_size / 2)
+    half_ = int(patch_w / 2)
     search_half = int(search_size / 2)
     starting_loc_h = (
-        half
-        if (center_patch_loc[0] - search_half - half < 0)
+        half_
+        if (center_patch_loc[0] - search_half - half_ < 0)
         else center_patch_loc[0] - search_half
     )
     starting_loc_w = (
-        half
-        if (center_patch_loc[1] - search_half - half < 0)
+        half_
+        if (center_patch_loc[1] - search_half - half_ < 0)
         else center_patch_loc[1] - search_half
     )
     ending_loc_h = (
-        (height - half)
-        if (center_patch_loc[0] + search_half + half > height)
+        (height - half_)
+        if (center_patch_loc[0] + search_half + half_ > height)
         else center_patch_loc[0] + search_half
     )
     ending_loc_w = (
-        (width - half)
-        if (center_patch_loc[1] + search_half + half > width)
+        (width - half_)
+        if (center_patch_loc[1] + search_half + half_ > width)
         else center_patch_loc[1] + search_half
     )
     patches = torch.zeros(
-        (tensor.shape[0], tensor.shape[1], patch_size, patch_size), device=device
+        (tensor.shape[0], tensor.shape[1], patch_w, patch_w), device=device
     )
     locs = torch.zeros((1, 2), device=device)
     count = 0
     for h in range(starting_loc_h, ending_loc_h, stride):
         for w in range(starting_loc_w, ending_loc_w, stride):
             locs = torch.cat((locs, torch.tensor([[h, w]], device=device)), 0)
-            patches = torch.cat((patches, getTensorPatch(tensor, [h, w], half)), 0)
+            patches = torch.cat((patches, getTensorPatch(tensor, [h, w], half_)), 0)
             count += 1
     return locs[1:], patches[1:]
 
 
-def getTensorPatch(Tensor, loc, half):
-    return Tensor[:, :, loc[0] - half : loc[0] + half, loc[1] - half : loc[1] + half]
+def getTensorPatch(Tensor, loc, half_):
+    return Tensor[
+        :, :, loc[0] - half_ : loc[0] + half_, loc[1] - half_ : loc[1] + half_
+    ]

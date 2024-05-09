@@ -1,4 +1,9 @@
 from modules.blocks.model import UNet
+from modules.patcher.sampler import (
+    PatchSampleLocalOneGroup,
+    PatchSampleNonlocalOneGroup,
+)
+from modules.losses.nce import PatchNCELoss, DisNCELoss
 import pytorch_lightning as pl
 import torch
 from utils import instantiate_from_config
@@ -50,8 +55,12 @@ class Restorer(pl.LightningModule):
     ):
         super().__init__()
         self.core_unet = CoreUNet(**ddconfig)
+        self.local_sampler = PatchSampleLocalOneGroup()
+        self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
         self.use_scheduler = scheduler_config is not None
-        self.loss = instantiate_from_config(lossconfig)
+        self.loss_ = instantiate_from_config(lossconfig)
+        self.loss_loc_ = PatchNCELoss()
+        self.loss_layer_ = DisNCELoss()
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
         if monitor is not None:
@@ -78,14 +87,21 @@ class Restorer(pl.LightningModule):
         return x
 
     def forward(self, inputs):
-        res = self.core_unet(inputs, 0)
+        res = self.core_unet(inputs)
         output = res + inputs
-        return output
+        return output, res
 
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, "image")
-        x_hat = self(x)
-        loss = torch.nn.functional.mse_loss(x_hat, x)
+        x_hat, noise = self(x)
+        # for clean image x_hat and noise iamge noise, there are local and nonlocal sample for L_location calculation
+        l_samples, l_ids = self.local_sampler([x_hat, noise])
+        nl_samples, nl_ids = self.nonlocal_sampler([x_hat, noise])
+        loss_layer = self.loss_layer_(*l_samples) + self.patch_nce_loss(
+            *nl_samples[::-1]
+        )
+
+        loss_consis = self.loss_(x_hat, x)
         self.log("train_loss", loss)
         return loss
 

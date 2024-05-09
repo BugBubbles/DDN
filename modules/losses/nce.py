@@ -4,9 +4,11 @@ from packaging import version
 
 
 class PatchNCELoss(nn.Module):
-    def __init__(self, opt):
+    '''
+    Location Contrastive loss
+    '''
+    def __init__(self):
         super().__init__()
-        self.opt = opt
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(reduction="none")
         self.mask_dtype = (
             torch.uint8
@@ -67,7 +69,7 @@ class PatchNCELoss(nn.Module):
 
 class DisNCELoss(nn.Module):
     """
-    Calculate the Nois Contrastive Estimate loss for Contrastive learning in MoCo manner
+    Layer Contrastive loss
     """
 
     def __init__(

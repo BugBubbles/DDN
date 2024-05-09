@@ -40,7 +40,7 @@ def Normalize(in_channels, num_groups=4):
 
 
 class Upsample(nn.Module):
-    def __init__(self, in_channels, with_conv):
+    def __init__(self, in_channels, with_conv=None):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
@@ -58,7 +58,7 @@ class Upsample(nn.Module):
 
 
 class Downsample(nn.Module):
-    def __init__(self, in_channels, with_conv):
+    def __init__(self, in_channels, with_conv=None):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
