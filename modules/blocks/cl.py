@@ -157,3 +157,19 @@ class ConvMid(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+
+class PartialGrad(nn.Module):
+    def __init__(self, input_ch, output_ch):
+        super(PartialGrad, self).__init__()
+        self.conv = 
+            nn.Conv2d(
+                input_ch,
+                output_ch,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                dilation=1,
+            )
+            
+    def forward(self, inputs):
+      return self.conv(inputs)

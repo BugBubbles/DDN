@@ -10,6 +10,7 @@ model:
       params:
         net: 'vgg'
         model_path: /home/xdy_cbf/CODE_cbf/Destrip/pretrained/lpips/vgg.pth
+      gen_nce_layers: [0, 2, 4, 8, 12]
 
     ddconfig:
       resolution: 256
