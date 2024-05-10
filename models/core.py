@@ -105,11 +105,7 @@ class Restorer(pl.LightningModule):
         x = self.get_input(batch, "image")
         x_hat, noise = self(x)
         # opt_core, opt_dis, opt_gen = self.optimizers()
-        loss, loss_dict = self.loss(
-            x_hat,
-            x,
-            noise,
-        )
+        loss, loss_dict = self.loss(x_hat, x, noise, stage="train")
         self.log_dict(
             loss_dict, prog_bar=False, logger=True, on_step=True, on_epoch=False
         )
@@ -145,12 +141,11 @@ class Restorer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, "image")
         x_hat, noise = self(x)
-        loss, loss_dict = self.loss(x_hat, x, noise)
-        self.log("val/loss", loss)
+        loss, loss_dict = self.loss(x_hat, x, noise, stage="validate")
         self.log_dict(loss_dict)
         return self.log_dict
 
-    def loss(self, x_hat, x, noise, lambdas=[0.25, 0.25, 0.25, 0.25]):
+    def loss(self, x_hat, x, noise, lambdas=[0.25, 0.25, 0.25, 0.25], stage="train"):
         loss_loc = self.calculate_loc_loss(x_hat, noise, x)
         loss_layer = self.calculate_layer_loss(x_hat, noise, x)
         loss_consis = self.main_loss(x_hat, x)
@@ -162,11 +157,11 @@ class Restorer(pl.LightningModule):
             + lambdas[3] * loss_destrip
         )
         loss_dict = {
-            "loss": loss,
-            "loss_consis": loss_consis.mean(),
-            "loss_loc": loss_loc,
-            "loss_layer": loss_layer,
-            "loss_destrip": loss_destrip,
+            f"{stage}/loss": loss,
+            f"{stage}/loss_consis": loss_consis.mean(),
+            f"{stage}/loss_loc": loss_loc,
+            f"{stage}/loss_layer": loss_layer,
+            f"{stage}/loss_destrip": loss_destrip,
         }
         return loss, loss_dict
 
