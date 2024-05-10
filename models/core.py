@@ -109,7 +109,7 @@ class Restorer(pl.LightningModule):
         x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
         # opt_core, opt_dis, opt_gen = self.optimizers()
-        loss, loss_dict = self.loss(x_hat, x, noise,self.lambdas, stage="train")
+        loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="train")
         self.log_dict(
             loss_dict, prog_bar=False, logger=True, on_step=True, on_epoch=False
         )
@@ -145,7 +145,7 @@ class Restorer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
-        _, loss_dict = self.loss(x_hat, x, noise,self.lambdas,  stage="validate")
+        _, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="validate")
         self.log_dict(loss_dict)
         return self.log_dict
 
