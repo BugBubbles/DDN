@@ -1,2 +1,2 @@
-export CUDA_VISIBLE_DEVICES=1
-pyd main.py --base configs/craters-unet-cl.yaml -t --gpus=0, 
+export CUDA_VISIBLE_DEVICES=7
+python main.py --base configs/craters-unet-cl.yaml -t --gpus=0, 

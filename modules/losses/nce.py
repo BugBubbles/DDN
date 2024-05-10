@@ -7,8 +7,10 @@ class PatchNCELoss:
     Location Contrastive loss
     """
 
-    def __init__(self):
+    def __init__(self, batch_size=16, nce_t=0.07):
         super().__init__()
+        self.batch_size = batch_size
+        self.nce_t = nce_t
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(reduction="none")
         self.mask_dtype = (
             torch.uint8
@@ -18,15 +20,21 @@ class PatchNCELoss:
 
     # feat_q and feat_k: 256 x 256, dim0: num_patches, dim1: feater length
     def __call__(self, feat_q, feat_k):
-        batchSize = feat_q.shape[0]  # 256
-        dim = feat_q.shape[1]  # 256
+        batch_size = feat_q.shape[0]
+        emb_dims = feat_q.shape[1]  # 256
+        chs = feat_q.shape[2]  # 256
         feat_k = feat_k.detach()
 
         # feat_q and feat_k: 256 x 256, dim0: num_patches, dim1: feater length
         # pos logit, the corresponding patches in each batch
-        l_pos = torch.bmm(feat_q.view(batchSize, 1, -1), feat_k.view(batchSize, -1, 1))
+        l_pos = torch.zeros([batch_size, emb_dims, 1], device=feat_q.device)
+        for i in range(batch_size):
+            l_pos[i, ...] = torch.bmm(
+                feat_q[i, ...].view(emb_dims, 1, -1),
+                feat_k[i, ...].view(emb_dims, -1, 1),
+            ).squeeze(2)
         # 256 x 1 x 1 -> 256 x 1
-        l_pos = l_pos.view(batchSize, 1)
+        # l_pos = l_pos.view(emb_dims, 1)
 
         # neg logit, cosine similarity of all the patches that are not corresponding
 
@@ -37,32 +45,27 @@ class PatchNCELoss:
         # However, for single-image translation, the minibatch consists of
         # crops from the "same" high-resolution image.
         # Therefore, we will include the negatives from the entire minibatch.
-        if self.opt.nce_includes_all_negatives_from_minibatch:
-            # reshape features as if they are all negatives of minibatch of size 1.
-            batch_dim_for_bmm = 1
-        else:
-            batch_dim_for_bmm = self.opt.batch_size
 
         # reshape features to batch size, feat_q and feat_k: 1 x 256 x 256
-        feat_q = feat_q.view(batch_dim_for_bmm, -1, dim)
-        feat_k = feat_k.view(batch_dim_for_bmm, -1, dim)
-        npatches = feat_q.size(1)
-        l_neg_curbatch = torch.bmm(feat_q, feat_k.transpose(2, 1))
+        l_neg_curbatch = torch.bmm(
+            feat_q.view(batch_size, -1, chs), feat_k.view(batch_size, chs, -1)
+        )
 
         # diagonal entries are similarity between same features, and hence meaningless.
         # just fill the diagonal with very small number, which is exp(-10) and almost zero
-        # 去掉对角线上相同位置patch的内积
-        diagonal = torch.eye(npatches, device=feat_q.device, dtype=self.mask_dtype)[
+        diagonal = torch.eye(emb_dims, device=feat_q.device, dtype=self.mask_dtype)[
             None, :, :
         ]  # 1 x 256 x 256
         l_neg_curbatch.masked_fill_(diagonal, -10.0)
-        l_neg = l_neg_curbatch.view(-1, npatches)  # 256 x 256
+        l_neg = l_neg_curbatch.view(batch_size, -1, emb_dims)  # 256 x 256
 
-        out = torch.cat((l_pos, l_neg), dim=1) / self.opt.nce_T
-
-        loss = self.cross_entropy_loss(
-            out, torch.zeros(out.size(0), dtype=torch.long, device=feat_q.device)
-        )
+        out = torch.cat((l_pos, l_neg), dim=2) / self.nce_t
+        loss = torch.zeros([out.shape[0]]).to(device=feat_q.device)
+        for i in range(out.shape[0]):
+            loss[i] = self.cross_entropy_loss(
+                out[i],
+                torch.zeros(out[i].size(0), dtype=torch.long, device=feat_q.device),
+            ).mean()
 
         return loss
 
@@ -83,7 +86,7 @@ class DisNCELoss:
     # feat_B for the background, feat_R for the rain
     # shape: (num_patches * batch_size, feature length)
     def __call__(self, featB, featR):
-        batch_size = featB.shape[0] // self.num_patches_pos
+        batch_size = featB.shape[1] // self.num_patches_pos
         # if featR.shape[0] != num_patches*batch_size:
         #     raise ValueError('num_patches of rain and background are not equal')
 
@@ -93,17 +96,18 @@ class DisNCELoss:
             dim=0,
         )
 
-        loss_dis_total = 0
+        loss_dis_total = torch.zeros([featB.shape[0]], device=featB.device)
         # obtain each background and the rain layer to calculate the disentangle loss
-        for i in range(0, batch_size):
-            cur_featB = featB[
-                i * self.num_patches_pos : (i + 1) * self.num_patches_pos, :
-            ]
-            cur_featR = featR[
-                i * self.num_patches_neg : (i + 1) * self.num_patches_neg, :
-            ]
-            cur_disloss = self.cal_each_disloss(cur_featB, cur_featR, labels)
-            loss_dis_total += cur_disloss
+        for batch in range(featB.shape[0]):
+            for i in range(batch_size):
+                cur_featB = featB[
+                    batch, i * self.num_patches_pos : (i + 1) * self.num_patches_pos, :
+                ]
+                cur_featR = featR[
+                    batch, i * self.num_patches_neg : (i + 1) * self.num_patches_neg, :
+                ]
+                cur_disloss = self.cal_each_disloss(cur_featB, cur_featR, labels)
+                loss_dis_total[batch] += cur_disloss
         return loss_dis_total
 
     # cur_featB: [num_patches, feature length]

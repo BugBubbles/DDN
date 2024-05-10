@@ -7,6 +7,8 @@ from modules.blocks.cl import Discriminator, Generator
 from modules.losses.nce import PatchNCELoss, DisNCELoss
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
+import torch.nn as nn
 from utils import instantiate_from_config
 
 
@@ -53,20 +55,22 @@ class Restorer(pl.LightningModule):
         ddconfig,
         scheduler_config,
         lossconfig,
-        sampler_config,
     ):
         super().__init__()
+        self.automatic_optimization = False
         self.core_unet = CoreUNet(**ddconfig)
         self.local_sampler = PatchSampleLocalOneGroup()
         self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
         self.use_scheduler = scheduler_config is not None
-        self.main_loss = instantiate_from_config(lossconfig)
-        self.loss_layer_ = []
-        self.loss_loc_ = DisNCELoss()
+        self.main_loss = nn.MSELoss()
+        self.loss_loc_ = []
+        self.loss_layer_ = DisNCELoss()
         for nce_layer in lossconfig["gen_nce_layers"]:
-            self.loss_layer_.append(PatchNCELoss())
+            self.loss_loc_.append(PatchNCELoss())
         self.mom_gen = Generator(ddconfig["input_ch"], ddconfig["output_ch"])
         self.mom_dis = Discriminator(ddconfig["input_ch"])
+        self.sobel_x = torch.Tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
+        self.sobel_y = torch.Tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
         if monitor is not None:
@@ -100,18 +104,92 @@ class Restorer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, "image")
         x_hat, noise = self(x)
+        # opt_core, opt_dis, opt_gen = self.optimizers()
+        loss, loss_dict = self.loss(
+            x_hat,
+            x,
+            noise,
+        )
+        self.log_dict(
+            loss_dict, prog_bar=False, logger=True, on_step=True, on_epoch=False
+        )
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.manual_backward(loss)
+        opt.step()
 
-        # for clean image x_hat and noise iamge noise, there are local and nonlocal sample for L_location calculation
+        # def core_closure():
+        #     # train encoder+decoder+logvar
+        #     opt_core.zero_grad()
+        #     self.manual_backward(loss, retain_graph=True)
+        #     opt_core.step()
+
+        # def gen_closure():
+        #     # train the generator
+        #     opt_gen.zero_grad()
+        #     self.manual_backward(loss)
+        #     opt_gen.step()
+
+        # def dis_closure():
+        #     # train the discriminator
+        #     opt_dis.zero_grad()
+        #     self.manual_backward(loss)
+        #     opt_dis.step()
+
+        # opt_core.step(closure=core_closure)
+        # if batch_idx % 4 == 1:
+        #     opt_dis.step(closure=dis_closure)
+        # if batch_idx % 4 == 3:
+        #     opt_gen.step(closure=gen_closure)
+
+    def validation_step(self, batch, batch_idx):
+        x = self.get_input(batch, "image")
+        x_hat, noise = self(x)
+        loss, loss_dict = self.loss(x_hat, x, noise)
+        self.log("val/loss", loss)
+        self.log_dict(loss_dict)
+        return self.log_dict
+
+    def loss(self, x_hat, x, noise, lambdas=[0.25, 0.25, 0.25, 0.25]):
         loss_loc = self.calculate_loc_loss(x_hat, noise, x)
         loss_layer = self.calculate_layer_loss(x_hat, noise, x)
         loss_consis = self.main_loss(x_hat, x)
-        loss_destrip = 
-        self.log("train_loss", loss)
-        return loss
-    def calculate_strip_loss(self,x_hat,noise,x):
-        
+        loss_destrip = self.calculate_strip_loss(x_hat, noise, x, 0.1)
+        loss = (
+            lambdas[0] * loss_consis.mean()
+            + lambdas[1] * loss_loc
+            + lambdas[2] * loss_layer
+            + lambdas[3] * loss_destrip
+        )
+        loss_dict = {
+            "loss": loss,
+            "loss_consis": loss_consis.mean(),
+            "loss_loc": loss_loc,
+            "loss_layer": loss_layer,
+            "loss_destrip": loss_destrip,
+        }
+        return loss, loss_dict
 
-    def calculate_loc_loss(self, x_hat, noise, x, adv_nce_layers=[0, 3, 7, 11]):
+    def calculate_strip_loss(self, x_hat, noise, x, lambda_):
+        chs = x_hat.shape[1]
+        sobel_x = (
+            self.sobel_x.repeat(x_hat.shape[0], chs, 1, 1)
+            .to(x.dtype)
+            .to(device=x.device)
+        )
+        sobel_y = (
+            self.sobel_y.repeat(x_hat.shape[0], chs, 1, 1)
+            .to(x.dtype)
+            .to(device=x.device)
+        )
+        x_hat_grad_x = F.conv2d(x_hat, sobel_x, padding=1)
+        noise_grad_y = F.conv2d(noise, sobel_y, padding=1)
+        loss = (1 - lambda_) * F.l1_loss(
+            x_hat_grad_x, torch.zeros_like(x_hat_grad_x)
+        ) + lambda_ * F.l1_loss(noise_grad_y, torch.zeros_like(noise_grad_y))
+        return loss
+
+    def calculate_layer_loss(self, x_hat, noise, x, adv_nce_layers=[0, 3, 7, 11]):
         feat_x_hat = self.mom_dis(x_hat, adv_nce_layers, encode_only=True)
         feat_noise = self.mom_dis(noise, adv_nce_layers, encode_only=True)
 
@@ -120,50 +198,43 @@ class Restorer(pl.LightningModule):
 
         total_dis_loss = 0.0
         for f_b, f_r, nce_layer in zip(feat_B_pool, feat_N_pool, adv_nce_layers):
-            loss = self.loss_loc_(f_b, f_r)
+            loss = self.loss_layer_(f_b, f_r)
             total_dis_loss += loss.mean()
 
         return total_dis_loss / len(adv_nce_layers)
 
-    def calculate_layer_loss(self, x_hat, noise, x, gen_nce_layers=[0, 2, 4, 8, 12]):
-        feat_b = x_hat
-        feat_b = [torch.flip(fq, [3]) for fq in feat_b]
+    def calculate_loc_loss(self, x_hat, noise, x, gen_nce_layers=[0, 2, 4, 8, 12]):
+        feat_x_hat = self.mom_gen(x_hat, gen_nce_layers, encode_only=True)
+        feat_x = self.mom_gen(x, gen_nce_layers, encode_only=True)
+        feat_b = [torch.flip(fq, [3]) for fq in feat_x_hat]
 
-        feat_o = x
+        feat_o = feat_x
         feat_o_pool, sample_ids = self.nonlocal_sampler(feat_o, 256, None)
         feat_b_pool, _ = self.nonlocal_sampler(feat_b, 256, sample_ids)
 
         total_nce_loss = 0.0
         for f_b, f_o, layer, nce_layer in zip(
-            feat_b_pool, feat_o_pool, self.loss_layer_, gen_nce_layers
+            feat_b_pool, feat_o_pool, self.loss_loc_, gen_nce_layers
         ):
             loss = layer(f_b, f_o)
             total_nce_loss += loss.mean()
 
         return total_nce_loss / len(gen_nce_layers)
 
-    @torch.no_grad()
-    def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, "image")
-        x_hat = self(x)
-        loss = torch.nn.functional.mse_loss(x_hat, x)
-        self.log("train_loss", loss)
-        return self.log_dict
-
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_core = torch.optim.Adam(
-            list(
-                self.core_unet.parameters(),
-            ),
+        opt = torch.optim.Adam(
+            list(self.core_unet.parameters())
+            + list(self.mom_dis.parameters())
+            + list(self.mom_gen.parameters()),
             lr=lr,
             betas=(0.5, 0.9),
         )
-        ope_dis = torch.optim.Adam(self.mom_dis.parameters(), lr=lr, betas=(0.5, 0.9))
-        return [opt_core, ope_dis], []
+        return opt
 
     @torch.no_grad()
     def log_images(self, batch, only_inputs=False, **kwargs):
+        # TODO fix this function
         log = dict()
         x = self.get_input(batch, self.image_key)
         x = x.to(self.device)
@@ -178,3 +249,11 @@ class Restorer(pl.LightningModule):
             log["reconstructions"] = xrec
         log["inputs"] = x
         return log
+
+    def to_rgb(self, x):
+        assert self.image_key == "segmentation"
+        if not hasattr(self, "colorize"):
+            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
+        x = F.conv2d(x, weight=self.colorize)
+        x = 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
+        return x

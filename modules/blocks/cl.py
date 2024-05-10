@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from modules.blocks.model import ResnetBlock, Downsample
 
@@ -5,8 +6,8 @@ from modules.blocks.model import ResnetBlock, Downsample
 class Discriminator(nn.Module):
     def __init__(
         self,
-        input_ch,
-        emb_ch=64,
+        in_channels,
+        emb_channels=64,
         n_layers=3,
         norm_layer=nn.BatchNorm2d,
         no_antialias=False,
@@ -15,22 +16,26 @@ class Discriminator(nn.Module):
         """Construct a PatchGAN discriminator
 
         Parameters:
-            input_ch (int)  -- the number of channels in input images
-            emb_ch (int)       -- the number of filters in the last conv layer
+            in_channels (int)  -- the number of channels in input images
+            emb_channels (int)       -- the number of filters in the last conv layer
             n_layers (int)  -- the number of conv layers in the discriminator
             norm_layer      -- normalization layer
         """
         super(Discriminator, self).__init__()
         if no_antialias:
             sequence = [
-                nn.Conv2d(input_ch, emb_ch, kernel_size=4, stride=2, padding=1),
+                nn.Conv2d(
+                    in_channels, emb_channels, kernel_size=4, stride=2, padding=1
+                ),
                 nn.LeakyReLU(0.2, True),
             ]
         else:
             sequence = [
-                nn.Conv2d(input_ch, emb_ch, kernel_size=4, stride=1, padding=1),
+                nn.Conv2d(
+                    in_channels, emb_channels, kernel_size=4, stride=1, padding=1
+                ),
                 nn.LeakyReLU(0.2, True),
-                Downsample(emb_ch),
+                Downsample(emb_channels),
             ]
         nf_mult = 1
         nf_mult_prev = 1
@@ -40,45 +45,45 @@ class Discriminator(nn.Module):
             if no_antialias:
                 sequence += [
                     nn.Conv2d(
-                        emb_ch * nf_mult_prev,
-                        emb_ch * nf_mult,
+                        emb_channels * nf_mult_prev,
+                        emb_channels * nf_mult,
                         kernel_size=4,
                         stride=2,
                         padding=1,
                     ),
-                    norm_layer(emb_ch * nf_mult),
+                    norm_layer(emb_channels * nf_mult),
                     nn.LeakyReLU(0.2, True),
                 ]
             else:
                 sequence += [
                     nn.Conv2d(
-                        emb_ch * nf_mult_prev,
-                        emb_ch * nf_mult,
+                        emb_channels * nf_mult_prev,
+                        emb_channels * nf_mult,
                         kernel_size=4,
                         stride=1,
                         padding=1,
                     ),
-                    norm_layer(emb_ch * nf_mult),
+                    norm_layer(emb_channels * nf_mult),
                     nn.LeakyReLU(0.2, True),
-                    Downsample(emb_ch * nf_mult),
+                    Downsample(emb_channels * nf_mult),
                 ]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2**n_layers, 8)
         sequence += [
             nn.Conv2d(
-                emb_ch * nf_mult_prev,
-                emb_ch * nf_mult,
+                emb_channels * nf_mult_prev,
+                emb_channels * nf_mult,
                 kernel_size=4,
                 stride=1,
                 padding=1,
             ),
-            norm_layer(emb_ch * nf_mult),
+            norm_layer(emb_channels * nf_mult),
             nn.LeakyReLU(0.2, True),
         ]
 
         sequence += [
-            nn.Conv2d(emb_ch * nf_mult, 1, kernel_size=4, stride=1, padding=1)
+            nn.Conv2d(emb_channels * nf_mult, 1, kernel_size=4, stride=1, padding=1)
         ]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
@@ -105,14 +110,26 @@ class Discriminator(nn.Module):
 class Generator(nn.Module):
     """For calculating the Contrastive loss"""
 
-    def __init__(self, input_ch, output_ch, emb_ch=32, num_res_blocks=4, **kwargs):
+    def __init__(
+        self, in_channels, out_channels, emb_channels=32, num_res_blocks=16, **kwargs
+    ):
         super(Generator, self).__init__()
         convs = []
-        convs.append(nn.Conv2d(input_ch, emb_ch, ksize=3, padding=1, stride=1))
+        convs.append(
+            nn.Conv2d(in_channels, emb_channels, kernel_size=3, padding=1, stride=1)
+        )
         for _ in range(num_res_blocks):
-            convs.append(ResnetBlock(emb_ch))
-        convs.append(ConvMid(emb_ch, emb_ch))
-        convs.append(nn.Conv2d(emb_ch, output_ch, ksize=3, padding=1, stride=1))
+            convs.append(
+                SingleResBlock(
+                    in_channels=emb_channels,
+                    out_channels=emb_channels,
+                    emb_channels=emb_channels,
+                )
+            )
+        convs.append(ConvMid(emb_channels, emb_channels))
+        convs.append(
+            nn.Conv2d(emb_channels, out_channels, kernel_size=3, padding=1, stride=1)
+        )
         self.gen = nn.Sequential(*convs)
 
     def forward(self, inputs, layers=[], encode_only=False):
@@ -131,23 +148,55 @@ class Generator(nn.Module):
             return out
 
 
-class ConvMid(nn.Module):
-    def __init__(self, input_ch, output_ch):
-        super(ConvMid, self).__init__()
-        self.conv = nn.Sequential(
+class SingleResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, emb_channels):
+        super(SingleResBlock, self).__init__()
+        self.relu = nn.ReLU()
+
+        self.res = nn.Sequential(
             nn.Conv2d(
-                input_ch,
-                output_ch,
+                in_channels,
+                emb_channels,
                 kernel_size=3,
                 stride=1,
                 padding=1,
                 dilation=1,
             ),
-            nn.InstanceNorm2d(output_ch),
+            nn.InstanceNorm2d(emb_channels),
             nn.ReLU(),
             nn.Conv2d(
-                output_ch,
-                output_ch,
+                emb_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                dilation=1,
+            ),
+            nn.InstanceNorm2d(out_channels),
+        )
+
+    def forward(self, x):
+        x = x + self.res(x)
+        return x
+
+
+class ConvMid(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ConvMid, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                dilation=1,
+            ),
+            nn.InstanceNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Conv2d(
+                out_channels,
+                out_channels,
                 kernel_size=3,
                 stride=1,
                 padding=1,
@@ -157,19 +206,3 @@ class ConvMid(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
-
-class PartialGrad(nn.Module):
-    def __init__(self, input_ch, output_ch):
-        super(PartialGrad, self).__init__()
-        self.conv = 
-            nn.Conv2d(
-                input_ch,
-                output_ch,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                dilation=1,
-            )
-            
-    def forward(self, inputs):
-      return self.conv(inputs)

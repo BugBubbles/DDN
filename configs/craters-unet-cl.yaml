@@ -34,7 +34,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 12
+    batch_size: 24
     train:
       target: ldm.data.crater.DTM_Train
       params:

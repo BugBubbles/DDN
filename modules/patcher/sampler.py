@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import init
 import random, math
+from typing_extensions import Union, List
 
 
 class Normalize(nn.Module):
@@ -11,7 +12,7 @@ class Normalize(nn.Module):
         self.power = power
 
     def forward(self, x):
-        norm = x.pow(self.power).sum(1, keepdim=True).pow(1.0 / self.power)
+        norm = x.pow(self.power).sum(2, keepdim=True).pow(1.0 / self.power)
         out = x.div(norm + 1e-7)
         return out
 
@@ -53,7 +54,10 @@ class PatchSampleLocalOneGroup(nn.Module):
         self.mlp_init = True
 
     def forward(
-        self, inputs: list[torch.TensorType], num_patches=64, patch_ids=None | list
+        self,
+        inputs: list[torch.TensorType],
+        num_patches=64,
+        patch_ids=Union[List, None],
     ):
         return_ids = []
         outputs = []
@@ -111,6 +115,12 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
     Patch in different positions in different images
     """
 
+    def __init__(self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4):
+        super().__init__(use_mlp, init_gain, emb_ch, patch_w)
+        self.half_ = self.patch_size // 2
+        self.search_size = 40
+        self.stride = 1
+
     def forward(self, inputs, num_patches=256, patch_ids=None):
         outputs = []
         if patch_ids is None:  # calculate the num_patches non-local keys in raw image
@@ -136,12 +146,13 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
                 img.device,
             )
             diff_pow = torch.pow((patches - sample_patch), 2)
-            diff_sum = torch.sum(torch.sum(torch.sum(diff_pow, 2), 2), 1)
+            diff_sum = torch.sum(torch.sum(torch.sum(diff_pow, 3), 3), 2)
             diff_sqr = torch.sqrt(diff_sum)  # length * 1
-            score, index = torch.topk(diff_sqr, num_patches, largest=False, sorted=True)
-
-            patch_ids = locs[index]
-            patch_ids = patch_ids.to(torch.long)
+            score, index = torch.topk(
+                diff_sqr, num_patches, dim=1, largest=False, sorted=True
+            )
+            index = index.repeat(2, 1, 1).permute(1, 2, 0)
+            patch_ids = locs.gather(1, index).to(torch.long)
         # debug_seeNonlocal(inputs[0],patch_ids,self.half_)
         # (num_patches, 2)
         if self.use_mlp and not self.mlp_init:
@@ -150,12 +161,10 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
             B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
             feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)  # (B, H*W, C)
             feat_patch_loc = torch.floor_divide((patch_ids * H), 256)
-            patch_id = feat_patch_loc[:, 0] * W + feat_patch_loc[:, 1]  # 256
+            patch_id = feat_patch_loc[..., 0] * W + feat_patch_loc[..., 1]  # 256
             # patch_id shape: num_patches
-            patch_id = patch_id.to(torch.long)
-            x_sample = feat_reshape[:, patch_id, :].flatten(
-                0, 1
-            )  # reshape(-1, x.shape[1])
+            patch_id = patch_id.to(torch.long).repeat(feat.shape[1], 1, 1).permute(1, 2, 0)
+            x_sample = feat_reshape.gather(1, patch_id)
 
             if self.use_mlp:
                 mlp = getattr(self, "mlp_%d" % feat_id)
@@ -176,10 +185,10 @@ def getNumpyPatch(ImgNumpy, loc, half_):
     return ImgNumpy[loc[0] - half_ : loc[0] + half_, loc[1] - half_ : loc[1] + half_, :]
 
 
-def getTensorLocs(tensor, center_patch_loc, patch_w, search_size, stride, device):
-    height, width = tensor.shape[2], tensor.shape[3]
-    half_ = int(patch_w / 2)
-    search_half = int(search_size / 2)
+def getTensorLocs(inputs, center_patch_loc, patch_w, search_size, stride, device):
+    height, width = inputs.shape[2], inputs.shape[3]
+    half_ = patch_w // 2
+    search_half = search_size // 2
     starting_loc_h = (
         half_
         if (center_patch_loc[0] - search_half - half_ < 0)
@@ -201,19 +210,31 @@ def getTensorLocs(tensor, center_patch_loc, patch_w, search_size, stride, device
         else center_patch_loc[1] + search_half
     )
     patches = torch.zeros(
-        (tensor.shape[0], tensor.shape[1], patch_w, patch_w), device=device
+        (inputs.shape[0], 1, inputs.shape[1], patch_w, patch_w), device=device
     )
-    locs = torch.zeros((1, 2), device=device)
-    count = 0
+    locs = torch.zeros((inputs.shape[0], 1, 2), device=device)
     for h in range(starting_loc_h, ending_loc_h, stride):
         for w in range(starting_loc_w, ending_loc_w, stride):
-            locs = torch.cat((locs, torch.tensor([[h, w]], device=device)), 0)
-            patches = torch.cat((patches, getTensorPatch(tensor, [h, w], half_)), 0)
-            count += 1
-    return locs[1:], patches[1:]
+            locs = torch.cat(
+                (
+                    locs,
+                    torch.tensor([[[h, w]]], device=device).repeat(
+                        inputs.shape[0], 1, 1
+                    ),
+                ),
+                1,
+            )
+            patches = torch.cat((patches, getTensorPatch(inputs, [h, w], half_)), 1)
+    return locs[:, 1:], patches[:, 1:]
 
 
-def getTensorPatch(Tensor, loc, half_):
-    return Tensor[
-        :, :, loc[0] - half_ : loc[0] + half_, loc[1] - half_ : loc[1] + half_
-    ]
+def getTensorPatch(inputs, loc, half_):
+    """
+    inputs: B, C, H, W
+    outputs: B, N, C, H, W
+    """
+    return (
+        inputs[:, :, loc[0] - half_ : loc[0] + half_, loc[1] - half_ : loc[1] + half_]
+        .repeat(1, 1, 1, 1, 1)
+        .permute(1, 0, 2, 3, 4)
+    )
