@@ -4,6 +4,8 @@ model:
   params:
     ckpt_path: 
     monitor: 'val_loss'
+    input_key: 'image'
+    lambdas: [0.25, 0.25,0.25,0.25]
 
     lossconfig:
       target: modules.losses.LPIPS

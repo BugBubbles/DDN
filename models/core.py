@@ -49,6 +49,8 @@ class Restorer(pl.LightningModule):
     def __init__(
         self,
         *,
+        lambdas,
+        input_key="image",
         ignore_keys=None,
         ckpt_path,
         monitor,
@@ -65,12 +67,14 @@ class Restorer(pl.LightningModule):
         self.main_loss = nn.MSELoss()
         self.loss_loc_ = []
         self.loss_layer_ = DisNCELoss()
-        for nce_layer in lossconfig["gen_nce_layers"]:
+        for _ in lossconfig["gen_nce_layers"]:
             self.loss_loc_.append(PatchNCELoss())
         self.mom_gen = Generator(ddconfig["input_ch"], ddconfig["output_ch"])
         self.mom_dis = Discriminator(ddconfig["input_ch"])
         self.sobel_x = torch.Tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
         self.sobel_y = torch.Tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
+        self.lambdas = lambdas
+        self.input_key = input_key
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
         if monitor is not None:
@@ -102,10 +106,10 @@ class Restorer(pl.LightningModule):
         return output, res
 
     def training_step(self, batch, batch_idx):
-        x = self.get_input(batch, "image")
+        x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
         # opt_core, opt_dis, opt_gen = self.optimizers()
-        loss, loss_dict = self.loss(x_hat, x, noise, stage="train")
+        loss, loss_dict = self.loss(x_hat, x, noise,self.lambdas, stage="train")
         self.log_dict(
             loss_dict, prog_bar=False, logger=True, on_step=True, on_epoch=False
         )
@@ -139,9 +143,9 @@ class Restorer(pl.LightningModule):
         #     opt_gen.step(closure=gen_closure)
 
     def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, "image")
+        x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
-        loss, loss_dict = self.loss(x_hat, x, noise, stage="validate")
+        _, loss_dict = self.loss(x_hat, x, noise,self.lambdas,  stage="validate")
         self.log_dict(loss_dict)
         return self.log_dict
 
@@ -231,22 +235,22 @@ class Restorer(pl.LightningModule):
     def log_images(self, batch, only_inputs=False, **kwargs):
         # TODO fix this function
         log = dict()
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.input_key)
         x = x.to(self.device)
         if not only_inputs:
-            xrec, posterior = self(x)
+            x_hat, noise = self(x)
             if x.shape[1] > 3:
                 # colorize with random projection
-                assert xrec.shape[1] > 3
+                assert x_hat.shape[1] > 3
                 x = self.to_rgb(x)
-                xrec = self.to_rgb(xrec)
-            log["samples"] = self.decode(torch.randn_like(posterior.sample()))
-            log["reconstructions"] = xrec
+                x_hat = self.to_rgb(x_hat)
+            log["denoised"] = x_hat
+            log["noise"] = noise
         log["inputs"] = x
         return log
 
     def to_rgb(self, x):
-        assert self.image_key == "segmentation"
+        assert self.input_key == "segmentation"
         if not hasattr(self, "colorize"):
             self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
         x = F.conv2d(x, weight=self.colorize)
