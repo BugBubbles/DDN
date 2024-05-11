@@ -3,7 +3,7 @@ model:
   target: models.core.Restorer
   params:
     ckpt_path: 
-    monitor: 'val_loss'
+    monitor: 'validate/loss'
     input_key: 'image'
     lambdas: [0.25, 0.25,0.25,0.25]
 
@@ -13,16 +13,42 @@ model:
         net: 'vgg'
         model_path: /home/xdy_cbf/CODE_cbf/Destrip/pretrained/lpips/vgg.pth
       gen_nce_layers: [0, 2, 4, 8, 12]
+    
+    # for auto-encoder configuration
+    first_stage_config:
+      target: models.autoencoder.AutoencoderKL
+      params:
+        embed_dim: 4
+        monitor: "val/rec_loss"
+        ckpt_path: /disk527/Datadisk/xdy_cbf/pretrained/models/first_stage_models/kl-32x32x8/epoch=000016.ckpt
+        ddconfig:
+          double_z: True
+          z_channels: 8
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+          num_res_blocks: 2
+          attn_resolutions: [ ]
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
 
-    ddconfig:
-      resolution: 256
-      emb_ch: 4
-      input_ch: 3
-      output_ch: 3
+    unet_config:
+      resolution: 32
+      ch: 8  # for latent channels
+      in_channels: 8
+      out_ch: 8
       num_res_blocks: 2
       attn_resolutions: [ 8,4,2 ]
       ch_mult: [1,2,4,4]
       use_timestep: False
+    
+    # for discriminator and generator configuration
+    ddconfig: 
+      in_channels: 3
+      out_ch: 3
 
     scheduler_config: # 10000 warmup steps
       target: utils.lr_scheduler.LambdaLinearScheduler
@@ -38,7 +64,7 @@ data:
   params:
     batch_size: 20
     train:
-      target: ldm.data.crater.DTM_Train
+      target: data.crater.DTM_Train
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 3
@@ -47,7 +73,7 @@ data:
         crop_part: [4,4]
 
     validation:
-      target: ldm.data.crater.DTM_Validate
+      target: data.crater.DTM_Validate
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 3
@@ -58,7 +84,7 @@ data:
         augment_t: False
     
     test:
-      target: ldm.data.crater.DTM_Test
+      target: data.crater.DTM_Test
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 3
@@ -73,7 +99,7 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 5000
+        batch_frequency: 100
         max_images: 8
         increase_log_steps: False
 

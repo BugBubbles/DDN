@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import torch.nn.functional as F
 from contextlib import contextmanager
 
-from modules.blocks import Encoder, Decoder
+from modules.blocks.model import Encoder, Decoder
 from modules.distributions import DiagonalGaussianDistribution
 
 from utils import instantiate_from_config

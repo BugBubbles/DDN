@@ -5,44 +5,12 @@ from modules.patcher.sampler import (
 )
 from modules.blocks.cl import Discriminator, Generator
 from modules.losses.nce import PatchNCELoss, DisNCELoss
+from modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from utils import instantiate_from_config
-
-
-class CoreUNet(UNet):
-    def __init__(
-        self,
-        *,
-        resolution,
-        emb_ch,
-        input_ch,
-        output_ch,
-        num_res_blocks,
-        attn_resolutions,
-        ch_mult=(1, 2, 4, 4),
-        dropout=0,
-        resamp_with_conv=True,
-        use_timestep=True,
-        use_linear_attn=False,
-        attn_type="vanilla",
-    ):
-        super().__init__(
-            ch=emb_ch,
-            out_ch=output_ch,
-            ch_mult=ch_mult,
-            num_res_blocks=num_res_blocks,
-            attn_resolutions=attn_resolutions,
-            dropout=dropout,
-            resamp_with_conv=resamp_with_conv,
-            in_channels=input_ch,
-            resolution=resolution,
-            use_timestep=use_timestep,
-            use_linear_attn=use_linear_attn,
-            attn_type=attn_type,
-        )
 
 
 class Restorer(pl.LightningModule):
@@ -54,13 +22,15 @@ class Restorer(pl.LightningModule):
         ignore_keys=None,
         ckpt_path,
         monitor,
+        first_stage_config,
         ddconfig,
+        unet_config,
         scheduler_config,
         lossconfig,
     ):
         super().__init__()
         self.automatic_optimization = False
-        self.core_unet = CoreUNet(**ddconfig)
+        self.core_unet = UNet(**unet_config)
         self.local_sampler = PatchSampleLocalOneGroup()
         self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
         self.use_scheduler = scheduler_config is not None
@@ -81,6 +51,15 @@ class Restorer(pl.LightningModule):
             self.monitor = monitor
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        # load the pretrained Auto-Encoder model
+        self.instantiate_first_stage(first_stage_config)
+
+    def instantiate_first_stage(self, config):
+        model = instantiate_from_config(config)
+        self.first_stage_model = model.eval()
+        self.first_stage_model.train(False)
+        for param in self.first_stage_model.parameters():
+            param.requires_grad = False
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -93,17 +72,39 @@ class Restorer(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
 
-    def get_input(self, batch, k):
-        x = batch[k]
+    @torch.no_grad()
+    def encode_first_stage(self, x):
+        return self.first_stage_model.encode(x)
+
+    @torch.no_grad()
+    def decode_first_stage(self, z):
+        return self.first_stage_model.decode(z)
+
+    def get_first_stage_encoding(self, encoder_posterior):
+        if isinstance(encoder_posterior, DiagonalGaussianDistribution):
+            z = encoder_posterior.sample()
+        elif isinstance(encoder_posterior, torch.Tensor):
+            z = encoder_posterior
+        else:
+            raise NotImplementedError(
+                f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented"
+            )
+        return z
+
+    def get_input(self, batch, key_):
+        x = batch[key_]
         if len(x.shape) == 3:
             x = x[..., None]
         x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
         return x
 
-    def forward(self, inputs):
-        res = self.core_unet(inputs)
-        output = res + inputs
-        return output, res
+    def forward(self, x):
+        encoder_posterior = self.encode_first_stage(x)
+        z = self.get_first_stage_encoding(encoder_posterior).detach()
+        z_noise = self.core_unet(z)
+        noise = self.decode_first_stage(z_noise)
+        x_hat = noise + x
+        return x_hat, noise
 
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, self.input_key)
@@ -117,30 +118,6 @@ class Restorer(pl.LightningModule):
         opt.zero_grad()
         self.manual_backward(loss)
         opt.step()
-
-        # def core_closure():
-        #     # train encoder+decoder+logvar
-        #     opt_core.zero_grad()
-        #     self.manual_backward(loss, retain_graph=True)
-        #     opt_core.step()
-
-        # def gen_closure():
-        #     # train the generator
-        #     opt_gen.zero_grad()
-        #     self.manual_backward(loss)
-        #     opt_gen.step()
-
-        # def dis_closure():
-        #     # train the discriminator
-        #     opt_dis.zero_grad()
-        #     self.manual_backward(loss)
-        #     opt_dis.step()
-
-        # opt_core.step(closure=core_closure)
-        # if batch_idx % 4 == 1:
-        #     opt_dis.step(closure=dis_closure)
-        # if batch_idx % 4 == 3:
-        #     opt_gen.step(closure=gen_closure)
 
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.input_key)

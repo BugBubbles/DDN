@@ -7,7 +7,7 @@ class Discriminator(nn.Module):
     def __init__(
         self,
         in_channels,
-        emb_channels=64,
+        out_ch=64,
         n_layers=3,
         norm_layer=nn.BatchNorm2d,
         no_antialias=False,
@@ -16,8 +16,8 @@ class Discriminator(nn.Module):
         """Construct a PatchGAN discriminator
 
         Parameters:
-            in_channels (int)  -- the number of channels in input images
-            emb_channels (int)       -- the number of filters in the last conv layer
+            in_channels (int)   -- the number of channels in input images
+            out_ch (int)  -- the number of filters in the last conv layer
             n_layers (int)  -- the number of conv layers in the discriminator
             norm_layer      -- normalization layer
         """
@@ -25,17 +25,17 @@ class Discriminator(nn.Module):
         if no_antialias:
             sequence = [
                 nn.Conv2d(
-                    in_channels, emb_channels, kernel_size=4, stride=2, padding=1
+                    in_channels, out_ch, kernel_size=4, stride=2, padding=1
                 ),
                 nn.LeakyReLU(0.2, True),
             ]
         else:
             sequence = [
                 nn.Conv2d(
-                    in_channels, emb_channels, kernel_size=4, stride=1, padding=1
+                    in_channels, out_ch, kernel_size=4, stride=1, padding=1
                 ),
                 nn.LeakyReLU(0.2, True),
-                Downsample(emb_channels),
+                Downsample(out_ch),
             ]
         nf_mult = 1
         nf_mult_prev = 1
@@ -45,45 +45,45 @@ class Discriminator(nn.Module):
             if no_antialias:
                 sequence += [
                     nn.Conv2d(
-                        emb_channels * nf_mult_prev,
-                        emb_channels * nf_mult,
+                        out_ch * nf_mult_prev,
+                        out_ch * nf_mult,
                         kernel_size=4,
                         stride=2,
                         padding=1,
                     ),
-                    norm_layer(emb_channels * nf_mult),
+                    norm_layer(out_ch * nf_mult),
                     nn.LeakyReLU(0.2, True),
                 ]
             else:
                 sequence += [
                     nn.Conv2d(
-                        emb_channels * nf_mult_prev,
-                        emb_channels * nf_mult,
+                        out_ch * nf_mult_prev,
+                        out_ch * nf_mult,
                         kernel_size=4,
                         stride=1,
                         padding=1,
                     ),
-                    norm_layer(emb_channels * nf_mult),
+                    norm_layer(out_ch * nf_mult),
                     nn.LeakyReLU(0.2, True),
-                    Downsample(emb_channels * nf_mult),
+                    Downsample(out_ch * nf_mult),
                 ]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2**n_layers, 8)
         sequence += [
             nn.Conv2d(
-                emb_channels * nf_mult_prev,
-                emb_channels * nf_mult,
+                out_ch * nf_mult_prev,
+                out_ch * nf_mult,
                 kernel_size=4,
                 stride=1,
                 padding=1,
             ),
-            norm_layer(emb_channels * nf_mult),
+            norm_layer(out_ch * nf_mult),
             nn.LeakyReLU(0.2, True),
         ]
 
         sequence += [
-            nn.Conv2d(emb_channels * nf_mult, 1, kernel_size=4, stride=1, padding=1)
+            nn.Conv2d(out_ch * nf_mult, 1, kernel_size=4, stride=1, padding=1)
         ]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
@@ -111,7 +111,7 @@ class Generator(nn.Module):
     """For calculating the Contrastive loss"""
 
     def __init__(
-        self, in_channels, out_channels, emb_channels=32, num_res_blocks=16, **kwargs
+        self, in_channels, out_ch, emb_channels=32, num_res_blocks=16, **kwargs
     ):
         super(Generator, self).__init__()
         convs = []
@@ -122,13 +122,13 @@ class Generator(nn.Module):
             convs.append(
                 SingleResBlock(
                     in_channels=emb_channels,
-                    out_channels=emb_channels,
+                    out_ch=emb_channels,
                     emb_channels=emb_channels,
                 )
             )
         convs.append(ConvMid(emb_channels, emb_channels))
         convs.append(
-            nn.Conv2d(emb_channels, out_channels, kernel_size=3, padding=1, stride=1)
+            nn.Conv2d(emb_channels, out_ch, kernel_size=3, padding=1, stride=1)
         )
         self.gen = nn.Sequential(*convs)
 
@@ -149,7 +149,7 @@ class Generator(nn.Module):
 
 
 class SingleResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, emb_channels):
+    def __init__(self, in_channels, out_ch, emb_channels):
         super(SingleResBlock, self).__init__()
         self.relu = nn.ReLU()
 
@@ -166,13 +166,13 @@ class SingleResBlock(nn.Module):
             nn.ReLU(),
             nn.Conv2d(
                 emb_channels,
-                out_channels,
+                out_ch,
                 kernel_size=3,
                 stride=1,
                 padding=1,
                 dilation=1,
             ),
-            nn.InstanceNorm2d(out_channels),
+            nn.InstanceNorm2d(out_ch),
         )
 
     def forward(self, x):
@@ -181,22 +181,22 @@ class SingleResBlock(nn.Module):
 
 
 class ConvMid(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_ch):
         super(ConvMid, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(
                 in_channels,
-                out_channels,
+                out_ch,
                 kernel_size=3,
                 stride=1,
                 padding=1,
                 dilation=1,
             ),
-            nn.InstanceNorm2d(out_channels),
+            nn.InstanceNorm2d(out_ch),
             nn.ReLU(),
             nn.Conv2d(
-                out_channels,
-                out_channels,
+                out_ch,
+                out_ch,
                 kernel_size=3,
                 stride=1,
                 padding=1,
