@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
-from modules.blocks.model import ResnetBlock, Downsample
+from modules.blocks.model import Downsample
 
 
 class Discriminator(nn.Module):
     def __init__(
         self,
         in_channels,
-        out_ch=64,
+        out_ch,
+        emb_channels=64,
         n_layers=3,
         norm_layer=nn.BatchNorm2d,
         no_antialias=False,
@@ -17,7 +18,7 @@ class Discriminator(nn.Module):
 
         Parameters:
             in_channels (int)   -- the number of channels in input images
-            out_ch (int)  -- the number of filters in the last conv layer
+            emb_channels (int)  -- the number of filters in the last conv layer
             n_layers (int)  -- the number of conv layers in the discriminator
             norm_layer      -- normalization layer
         """
@@ -25,17 +26,17 @@ class Discriminator(nn.Module):
         if no_antialias:
             sequence = [
                 nn.Conv2d(
-                    in_channels, out_ch, kernel_size=4, stride=2, padding=1
+                    in_channels, emb_channels, kernel_size=4, stride=2, padding=1
                 ),
                 nn.LeakyReLU(0.2, True),
             ]
         else:
             sequence = [
                 nn.Conv2d(
-                    in_channels, out_ch, kernel_size=4, stride=1, padding=1
+                    in_channels, emb_channels, kernel_size=4, stride=1, padding=1
                 ),
                 nn.LeakyReLU(0.2, True),
-                Downsample(out_ch),
+                Downsample(emb_channels),
             ]
         nf_mult = 1
         nf_mult_prev = 1
@@ -45,45 +46,45 @@ class Discriminator(nn.Module):
             if no_antialias:
                 sequence += [
                     nn.Conv2d(
-                        out_ch * nf_mult_prev,
-                        out_ch * nf_mult,
+                        emb_channels * nf_mult_prev,
+                        emb_channels * nf_mult,
                         kernel_size=4,
                         stride=2,
                         padding=1,
                     ),
-                    norm_layer(out_ch * nf_mult),
+                    norm_layer(emb_channels * nf_mult),
                     nn.LeakyReLU(0.2, True),
                 ]
             else:
                 sequence += [
                     nn.Conv2d(
-                        out_ch * nf_mult_prev,
-                        out_ch * nf_mult,
+                        emb_channels * nf_mult_prev,
+                        emb_channels * nf_mult,
                         kernel_size=4,
                         stride=1,
                         padding=1,
                     ),
-                    norm_layer(out_ch * nf_mult),
+                    norm_layer(emb_channels * nf_mult),
                     nn.LeakyReLU(0.2, True),
-                    Downsample(out_ch * nf_mult),
+                    Downsample(emb_channels * nf_mult),
                 ]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2**n_layers, 8)
         sequence += [
             nn.Conv2d(
-                out_ch * nf_mult_prev,
-                out_ch * nf_mult,
+                emb_channels * nf_mult_prev,
+                emb_channels * nf_mult,
                 kernel_size=4,
                 stride=1,
                 padding=1,
             ),
-            norm_layer(out_ch * nf_mult),
+            norm_layer(emb_channels * nf_mult),
             nn.LeakyReLU(0.2, True),
         ]
 
         sequence += [
-            nn.Conv2d(out_ch * nf_mult, 1, kernel_size=4, stride=1, padding=1)
+            nn.Conv2d(emb_channels * nf_mult, 1, kernel_size=4, stride=1, padding=1)
         ]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
@@ -149,7 +150,7 @@ class Generator(nn.Module):
 
 
 class SingleResBlock(nn.Module):
-    def __init__(self, in_channels, out_ch, emb_channels):
+    def __init__(self, in_channels, out_ch, emb_channels, **kwargs):
         super(SingleResBlock, self).__init__()
         self.relu = nn.ReLU()
 

@@ -5,7 +5,8 @@ from modules.patcher.sampler import (
 )
 from modules.blocks.cl import Discriminator, Generator
 from modules.losses.nce import PatchNCELoss, DisNCELoss
-from modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
+from modules.distributions import normal_kl, DiagonalGaussianDistribution
+from torch.optim.lr_scheduler import LambdaLR
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -19,7 +20,7 @@ class Restorer(pl.LightningModule):
         *,
         lambdas,
         input_key="image",
-        ignore_keys=None,
+        ignore_keys=[],
         ckpt_path,
         monitor,
         first_stage_config,
@@ -37,10 +38,10 @@ class Restorer(pl.LightningModule):
         self.main_loss = nn.MSELoss()
         self.loss_loc_ = []
         self.loss_layer_ = DisNCELoss()
-        for _ in lossconfig["gen_nce_layers"]:
+        for _ in lossconfig.pop("gen_nce_layers"):
             self.loss_loc_.append(PatchNCELoss())
-        self.mom_gen = Generator(ddconfig["input_ch"], ddconfig["output_ch"])
-        self.mom_dis = Discriminator(ddconfig["input_ch"])
+        self.mom_gen = Generator(**ddconfig)
+        self.mom_dis = Discriminator(**ddconfig)
         self.sobel_x = torch.Tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
         self.sobel_y = torch.Tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
         self.lambdas = lambdas
@@ -110,20 +111,58 @@ class Restorer(pl.LightningModule):
         x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
         # opt_core, opt_dis, opt_gen = self.optimizers()
-        loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="train")
-        self.log_dict(
-            loss_dict, prog_bar=False, logger=True, on_step=True, on_epoch=False
-        )
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.manual_backward(loss)
-        opt.step()
+
+        # automatic backward without using closure
+        opt, opt_de = self.optimizers()
+
+        # opt.zero_grad()
+        # self.backward(loss)
+        # opt.step()
+        def unet_closure():
+            loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="unet")
+            self.log_dict(
+                loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True
+            )
+            self.log(
+                "unetloss",
+                loss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            opt.zero_grad()
+            self.manual_backward(loss)
+            opt.step()
+
+        def de_closure():
+            loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="disc")
+            self.log_dict(
+                loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True
+            )
+            self.log(
+                "discloss",
+                loss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            opt_de.zero_grad()
+            self.manual_backward(loss)
+            opt_de.step()
+
+        opt.step(closure=unet_closure)
+        if batch_idx % 4 == 0:
+            opt_de.step(closure=de_closure)
 
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
         _, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="validate")
-        self.log_dict(loss_dict)
+        self.log_dict(
+            loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
+        )
         return self.log_dict
 
     def loss(self, x_hat, x, noise, lambdas=[0.25, 0.25, 0.25, 0.25], stage="train"):
@@ -131,11 +170,13 @@ class Restorer(pl.LightningModule):
         loss_layer = self.calculate_layer_loss(x_hat, noise, x)
         loss_consis = self.main_loss(x_hat, x)
         loss_destrip = self.calculate_strip_loss(x_hat, noise, x, 0.1)
+        loss_penalty = F.l1_loss(noise, torch.zeros_like(noise))
         loss = (
             lambdas[0] * loss_consis.mean()
             + lambdas[1] * loss_loc
             + lambdas[2] * loss_layer
             + lambdas[3] * loss_destrip
+            + 10 * loss_penalty
         )
         loss_dict = {
             f"{stage}/loss": loss,
@@ -143,6 +184,7 @@ class Restorer(pl.LightningModule):
             f"{stage}/loss_loc": loss_loc,
             f"{stage}/loss_layer": loss_layer,
             f"{stage}/loss_destrip": loss_destrip,
+            f"{stage}/loss_penalty": loss_penalty,
         }
         return loss, loss_dict
 
@@ -200,13 +242,29 @@ class Restorer(pl.LightningModule):
     def configure_optimizers(self):
         lr = self.learning_rate
         opt = torch.optim.Adam(
-            list(self.core_unet.parameters())
-            + list(self.mom_dis.parameters())
-            + list(self.mom_gen.parameters()),
+            self.core_unet.parameters(),
             lr=lr,
             betas=(0.5, 0.9),
         )
-        return opt
+        opt_de = torch.optim.Adam(
+            list(self.mom_dis.parameters()) + list(self.mom_gen.parameters()),
+            lr=lr,
+            betas=(0.5, 0.9),
+        )
+        if self.use_scheduler:
+            assert "target" in self.scheduler_config
+            scheduler = instantiate_from_config(self.scheduler_config)
+
+            print("Setting up LambdaLR scheduler...")
+            scheduler = [
+                {
+                    "scheduler": LambdaLR(opt, lr_lambda=scheduler.schedule),
+                    "interval": "step",
+                    "frequency": 1,
+                }
+            ]
+            return [opt, opt_de], scheduler
+        return opt, opt_de
 
     @torch.no_grad()
     def log_images(self, batch, only_inputs=False, **kwargs):
