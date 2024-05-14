@@ -22,13 +22,7 @@ class PatchSampleLocalOneGroup(nn.Module):
     Patch in the same position in different images
     """
 
-    def __init__(
-        self,
-        use_mlp=False,
-        init_gain=0.02,
-        emb_ch=256,
-        patch_w=4,
-    ):
+    def __init__(self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4, **kwargs):
         # potential issues: currently, we use the same patch_ids for multiple images in the batch
         super(PatchSampleLocalOneGroup, self).__init__()
         self.l2norm = Normalize(2)
@@ -115,10 +109,12 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
     Patch in different positions in different images
     """
 
-    def __init__(self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4):
+    def __init__(
+        self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4, search_size=40
+    ):
         super().__init__(use_mlp, init_gain, emb_ch, patch_w)
         self.half_ = self.patch_size // 2
-        self.search_size = 40
+        self.search_size = search_size
         self.stride = 1
 
     def forward(self, inputs, num_patches=256, patch_ids=None):
@@ -131,7 +127,7 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
 
             # Nonlocal in tensor
             img = inputs[0]
-            B, H, W = img.shape[0], img.shape[2], img.shape[3]
+            B, C, H, W = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
             sample_loc = [
                 random.randint(self.patch_size, H - self.patch_size),
                 random.randint(self.patch_size, W - self.patch_size),
@@ -158,12 +154,13 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
         if self.use_mlp and not self.mlp_init:
             self.create_mlp(inputs)
         for feat_id, feat in enumerate(inputs):
-            B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
             feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)  # (B, H*W, C)
             feat_patch_loc = torch.floor_divide((patch_ids * H), 256)
             patch_id = feat_patch_loc[..., 0] * W + feat_patch_loc[..., 1]  # 256
             # patch_id shape: num_patches
-            patch_id = patch_id.to(torch.long).repeat(feat.shape[1], 1, 1).permute(1, 2, 0)
+            patch_id = (
+                patch_id.to(torch.long).repeat(C, 1, 1).permute(1, 2, 0)
+            )
             x_sample = feat_reshape.gather(1, patch_id)
 
             if self.use_mlp:
