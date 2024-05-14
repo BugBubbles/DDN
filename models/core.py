@@ -35,7 +35,7 @@ class Restorer(pl.LightningModule):
         self.local_sampler = PatchSampleLocalOneGroup()
         self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
         self.use_scheduler = scheduler_config is not None
-        self.main_loss = nn.MSELoss()
+        self.loss_consi_ = instantiate_from_config(lossconfig)
         self.loss_loc_ = []
         self.loss_layer_ = DisNCELoss()
         for _ in lossconfig.pop("gen_nce_layers"):
@@ -115,20 +115,17 @@ class Restorer(pl.LightningModule):
         # automatic backward without using closure
         opt, opt_de = self.optimizers()
 
-        # opt.zero_grad()
-        # self.backward(loss)
-        # opt.step()
         def unet_closure():
-            loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="unet")
+            loss, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="unet")
             self.log_dict(
-                loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True
+                loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
             )
             self.log(
                 "unetloss",
                 loss,
-                prog_bar=True,
+                prog_bar=False,
                 logger=True,
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
             )
             opt.zero_grad()
@@ -136,16 +133,16 @@ class Restorer(pl.LightningModule):
             opt.step()
 
         def de_closure():
-            loss, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="disc")
+            loss, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="disc")
             self.log_dict(
-                loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True
+                loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
             )
             self.log(
                 "discloss",
                 loss,
-                prog_bar=True,
+                prog_bar=False,
                 logger=True,
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
             )
             opt_de.zero_grad()
@@ -159,30 +156,42 @@ class Restorer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.input_key)
         x_hat, noise = self(x)
-        _, loss_dict = self.loss(x_hat, x, noise, self.lambdas, stage="validate")
+        _, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="validate")
         self.log_dict(
             loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
         )
         return self.log_dict
 
-    def loss(self, x_hat, x, noise, lambdas=[0.25, 0.25, 0.25, 0.25], stage="train"):
+    def loss(
+        self,
+        x_hat,
+        x,
+        noise,
+        lambda_loc,
+        lambda_layer,
+        lambda_consis,
+        lambda_destrip,
+        lambda_penalty,
+        *,
+        stage="train",
+    ):
         loss_loc = self.calculate_loc_loss(x_hat, noise, x)
         loss_layer = self.calculate_layer_loss(x_hat, noise, x)
-        loss_consis = self.main_loss(x_hat, x)
-        loss_destrip = self.calculate_strip_loss(x_hat, noise, x, 0.1)
+        loss_consis = self.loss_consi_(x_hat, x)
+        loss_destrip = self.calculate_strip_loss(x_hat, noise, x, 0.5)
         loss_penalty = F.l1_loss(noise, torch.zeros_like(noise))
         loss = (
-            lambdas[0] * loss_consis.mean()
-            + lambdas[1] * loss_loc
-            + lambdas[2] * loss_layer
-            + lambdas[3] * loss_destrip
-            + 10 * loss_penalty
+            lambda_loc * loss_consis.mean()
+            + lambda_layer * loss_loc
+            + lambda_consis * loss_layer
+            + lambda_destrip * loss_destrip
+            + lambda_penalty * loss_penalty
         )
         loss_dict = {
             f"{stage}/loss": loss,
-            f"{stage}/loss_consis": loss_consis.mean(),
             f"{stage}/loss_loc": loss_loc,
             f"{stage}/loss_layer": loss_layer,
+            f"{stage}/loss_consis": loss_consis.mean(),
             f"{stage}/loss_destrip": loss_destrip,
             f"{stage}/loss_penalty": loss_penalty,
         }

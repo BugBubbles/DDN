@@ -1,2 +1,2 @@
 export CUDA_VISIBLE_DEVICES=3,4
-python main.py --base configs/craters-unet-cl.yaml -t --resume /home/xdy_cbf/CODE_cbf/Destrip/logs/2024-05-13T09-13-26_craters-unet-cl/checkpoints/epoch=000000.ckpt --gpus=0,1, --strategy=ddp_find_unused_parameters_true
+python main.py --base configs/craters-unet-cl.yaml -t --gpus=0,1, --strategy=ddp_find_unused_parameters_true

@@ -1,4 +1,4 @@
-name: ldm
+name: destrip
 channels:
   - conda-forge
   - nvidia
