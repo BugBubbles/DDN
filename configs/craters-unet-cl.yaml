@@ -2,16 +2,16 @@ model:
   base_learning_rate: 5.0e-5   # set to target_lr by starting main.py with '--scale_lr False'
   target: models.core.Restorer
   params:
-    ckpt_path: /home/xdy_cbf/CODE_cbf/Destrip/logs/2024-05-13T09-13-26_craters-unet-cl/checkpoints/epoch=000000.ckpt
+    ckpt_path:
     monitor: 'validate/loss'
     input_key: 'image'
-    lambdas: [1,10,10,1]
+    lambdas: [1,1000,10,1, 10]
 
     lossconfig:
-      target: modules.losses.LPIPS
-      params:
-        net: 'vgg'
-        model_path: /home/xdy_cbf/CODE_cbf/Destrip/pretrained/lpips/vgg.pth
+      target: modules.losses.SSIMLoss
+      # params:
+      #   net: 'vgg'
+      #   model_path: /home/xdy_cbf/CODE_cbf/Destrip/pretrained/lpips/vgg.pth
       gen_nce_layers: [0, 2, 4, 8, 12]
     
     # for auto-encoder configuration
@@ -36,19 +36,28 @@ model:
           target: torch.nn.Identity
 
     unet_config:
-      resolution: 32
-      ch: 8  # for latent channels
-      in_channels: 4
-      out_ch: 4
-      num_res_blocks: 2
-      attn_resolutions: [ ]
-      ch_mult: [1,2,4]
-      use_timestep: False
+      target: models.core.ConditionedUNet
+      params:
+        resolution: 32
+        ch: 8  # for latent channels
+        in_channels: 4
+        out_ch: 4
+        num_res_blocks: 2
+        attn_resolutions: [ ]
+        ch_mult: [1,2,4]
+        use_timestep: False
     
     # for discriminator and generator configuration
     ddconfig: 
       in_channels: 3
       out_ch: 3
+    
+    sampler_config:
+      target: modules.patcher.sampler.PatchSampleNonlocalOneGroup
+      # params:
+      #   use_mlp: True
+      #   patch_w: 4
+
 
     scheduler_config: # 10000 warmup steps
       target: utils.lr_scheduler.LambdaLinearScheduler
@@ -62,7 +71,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 20
+    batch_size: 15
     train:
       target: data.crater.DTM_Train
       params:
@@ -99,10 +108,9 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 500
+        batch_frequency: 200
         max_images: 8
         increase_log_steps: False
-
 
   trainer:
     benchmark: True

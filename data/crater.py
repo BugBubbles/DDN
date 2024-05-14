@@ -26,7 +26,7 @@ class Kaguyu(Dataset):
         self.data = self._prepare()
 
     def __len__(self):
-        return self.h_crop * self.w_crop * len(self.data)
+        return self.h_crop * self.w_crop * 50
 
     def _prepare(self):
         raise NotImplementedError

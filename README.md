@@ -8,7 +8,7 @@ Self-supervised Remote Sensing Image Destriping via Constrastive Learning
 # Install
 First, you should clone this repostry to your local machine.
 ```bash
-git clone git@github.com:Bugbubbles/Destrip.git
+git clone git@github.com:BugBubbles/CraterDestrip.git
 ```
 Then, you should install the dependencies.
 ```bash

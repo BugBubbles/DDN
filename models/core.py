@@ -14,6 +14,10 @@ import torch.nn as nn
 from utils import instantiate_from_config
 
 
+class ConditionedUNet(UNet):
+    pass
+
+
 class Restorer(pl.LightningModule):
     def __init__(
         self,
@@ -28,12 +32,14 @@ class Restorer(pl.LightningModule):
         unet_config,
         scheduler_config,
         lossconfig,
+        sampler_config,
+        **kwargs,
     ):
         super().__init__()
         self.automatic_optimization = False
-        self.core_unet = UNet(**unet_config)
-        self.local_sampler = PatchSampleLocalOneGroup()
-        self.nonlocal_sampler = PatchSampleNonlocalOneGroup()
+        self.core_unet = instantiate_from_config(unet_config)
+        self.local_sampler = instantiate_from_config(sampler_config)
+        self.nonlocal_sampler = instantiate_from_config(sampler_config)
         self.use_scheduler = scheduler_config is not None
         self.loss_consi_ = instantiate_from_config(lossconfig)
         self.loss_loc_ = []
@@ -102,8 +108,9 @@ class Restorer(pl.LightningModule):
     def forward(self, x):
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
-        z_noise = self.core_unet(z)
-        noise = self.decode_first_stage(z_noise)
+        for _ in range(3):
+            z = self.core_unet(z)
+        noise = self.decode_first_stage(z)
         x_hat = noise + x
         return x_hat, noise
 
@@ -178,7 +185,7 @@ class Restorer(pl.LightningModule):
         loss_loc = self.calculate_loc_loss(x_hat, noise, x)
         loss_layer = self.calculate_layer_loss(x_hat, noise, x)
         loss_consis = self.loss_consi_(x_hat, x)
-        loss_destrip = self.calculate_strip_loss(x_hat, noise, x, 0.5)
+        loss_destrip, _, _ = self.calculate_strip_loss(x_hat, noise, x, 0.5)
         loss_penalty = F.l1_loss(noise, torch.zeros_like(noise))
         loss = (
             lambda_loc * loss_consis.mean()
@@ -194,27 +201,21 @@ class Restorer(pl.LightningModule):
             f"{stage}/loss_consis": loss_consis.mean(),
             f"{stage}/loss_destrip": loss_destrip,
             f"{stage}/loss_penalty": loss_penalty,
+            # f"{stage}/grad_x": grad_x,
+            # f"{stage}/grad_y": grad_y,
         }
         return loss, loss_dict
 
     def calculate_strip_loss(self, x_hat, noise, x, lambda_):
         chs = x_hat.shape[1]
-        sobel_x = (
-            self.sobel_x.repeat(x_hat.shape[0], chs, 1, 1)
-            .to(x.dtype)
-            .to(device=x.device)
-        )
-        sobel_y = (
-            self.sobel_y.repeat(x_hat.shape[0], chs, 1, 1)
-            .to(x.dtype)
-            .to(device=x.device)
-        )
+        sobel_x = self.sobel_x.repeat(chs, chs, 1, 1).to(x.dtype).to(device=x.device)
+        sobel_y = self.sobel_y.repeat(chs, chs, 1, 1).to(x.dtype).to(device=x.device)
         x_hat_grad_x = F.conv2d(x_hat, sobel_x, padding=1)
         noise_grad_y = F.conv2d(noise, sobel_y, padding=1)
         loss = (1 - lambda_) * F.l1_loss(
             x_hat_grad_x, torch.zeros_like(x_hat_grad_x)
         ) + lambda_ * F.l1_loss(noise_grad_y, torch.zeros_like(noise_grad_y))
-        return loss
+        return loss, x_hat_grad_x, noise_grad_y
 
     def calculate_layer_loss(self, x_hat, noise, x, adv_nce_layers=[0, 3, 7, 11]):
         feat_x_hat = self.mom_dis(x_hat, adv_nce_layers, encode_only=True)
@@ -231,6 +232,7 @@ class Restorer(pl.LightningModule):
         return total_dis_loss / len(adv_nce_layers)
 
     def calculate_loc_loss(self, x_hat, noise, x, gen_nce_layers=[0, 2, 4, 8, 12]):
+        # 对去噪得到的图像再作一次卷积提取特征图，我感觉有点喧宾夺主，反而变成训练这两个不需要有卷积网络去了
         feat_x_hat = self.mom_gen(x_hat, gen_nce_layers, encode_only=True)
         feat_x = self.mom_gen(x, gen_nce_layers, encode_only=True)
         feat_b = [torch.flip(fq, [3]) for fq in feat_x_hat]
@@ -283,11 +285,13 @@ class Restorer(pl.LightningModule):
         x = x.to(self.device)
         if not only_inputs:
             x_hat, noise = self(x)
+            _, grad_x, grad_y = self.calculate_strip_loss(x_hat, noise, x, 0.5)
             if x.shape[1] > 3:
                 # colorize with random projection
                 assert x_hat.shape[1] > 3
                 x = self.to_rgb(x)
                 x_hat = self.to_rgb(x_hat)
+                noise = self.to_rgb(noise)
             log["denoised"] = x_hat
             log["noise"] = noise
         log["inputs"] = x

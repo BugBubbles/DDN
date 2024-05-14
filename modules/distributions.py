@@ -23,6 +23,10 @@ class DiracDistribution(AbstractDistribution):
 
 class DiagonalGaussianDistribution(AbstractDistribution):
     def __init__(self, parameters, deterministic=False):
+        '''
+        Arguments:
+         : parameters: torch.Tensor of shape (batch_size, 2 * z_channels, height, width), the former half of the channels are the means and the latter half are the logvars
+        '''
         self.parameters = parameters
         self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
         self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
