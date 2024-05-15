@@ -1,4 +1,3 @@
-from modules.blocks.model import UNet
 from modules.patcher.sampler import (
     PatchSampleLocalOneGroup,
     PatchSampleNonlocalOneGroup,
@@ -13,38 +12,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 from utils import instantiate_from_config
 
-
-class ConditionedUNet(UNet):
-    def __init__(
-        self,
-        *,
-        ch,
-        out_ch,
-        ch_mult=...,
-        num_res_blocks,
-        attn_resolutions,
-        dropout=0,
-        resamp_with_conv=True,
-        in_channels,
-        resolution,
-        use_timestep: bool = True,
-        use_linear_attn: bool = False,
-        attn_type="vanilla",
-    ):
-        super().__init__(
-            ch=ch,
-            out_ch=out_ch,
-            ch_mult=ch_mult,
-            num_res_blocks=num_res_blocks,
-            attn_resolutions=attn_resolutions,
-            dropout=dropout,
-            resamp_with_conv=resamp_with_conv,
-            in_channels=in_channels,
-            resolution=resolution,
-            use_timestep=use_timestep,
-            use_linear_attn=use_linear_attn,
-            attn_type=attn_type,
-        )
 
 
 class Restorer(pl.LightningModule):
@@ -137,8 +104,7 @@ class Restorer(pl.LightningModule):
     def forward(self, x):
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
-        for _ in range(6):
-            z = self.core_unet(z)
+        z = self.core_unet(z)
         noise = self.decode_first_stage(z)
         x_hat = noise + x
         return x_hat, noise
