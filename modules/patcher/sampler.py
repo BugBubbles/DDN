@@ -17,35 +17,42 @@ class Normalize(nn.Module):
         return out
 
 
-class PatchSampleLocalOneGroup(nn.Module):
-    """
-    Patch in the same position in different images
-    """
-
-    def __init__(self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4, **kwargs):
+class Sampler(nn.Module):
+    def __init__(self, use_mlp=False, emb_ch=256, patch_w=4):
         # potential issues: currently, we use the same patch_ids for multiple images in the batch
-        super(PatchSampleLocalOneGroup, self).__init__()
+        super().__init__()
         self.l2norm = Normalize(2)
         self.use_mlp = use_mlp
         self.emb_ch = emb_ch  # hard-coded
-        self.mlp_init = False
-        self.init_gain = init_gain
         self.patch_w = patch_w
-        self.patch_size = self.patch_w * self.patch_w
+        self.mlp = dict()
 
-    def create_mlp(self, inputs):
-        for mlp_id, feat in enumerate(inputs):
-            input_nc = feat.shape[1] * self.patch_size
+    def create_mlp(self, patch_ids, inputs, id: str):
+        self.mlp[f"proj_{id}"] = []
+        for feat in inputs:
+            input_nc = feat.shape[1] * patch_ids.shape[1]
             mlp = nn.Sequential(
                 *[
                     nn.Linear(input_nc, self.emb_ch),
                     nn.ReLU(),
-                    nn.Linear(self.emb_ch, self.emb_ch),
+                    nn.Linear(self.emb_ch, input_nc),
                 ]
-            )
-            setattr(self, "mlp_%d" % mlp_id, mlp)
-        init.normal_(self, 0.0, self.init_gain)
-        self.mlp_init = True
+            ).to(feat.device)
+            self.mlp[f"proj_{id}"].append(mlp)
+
+    def forward(self, inputs, num_patches, patch_ids):
+        raise NotImplementedError
+
+
+class PatchSampleLocalOneGroup(Sampler):
+    """
+    Patch in the same position in different images
+    """
+
+    def __init__(self, use_mlp=False, emb_ch=256, patch_w=4, **kwargs):
+        # potential issues: currently, we use the same patch_ids for multiple images in the batch
+        super().__init__(use_mlp=use_mlp, emb_ch=emb_ch, patch_w=patch_w)
+        self.patch_size = self.patch_w * self.patch_w
 
     def forward(
         self,
@@ -91,8 +98,10 @@ class PatchSampleLocalOneGroup(nn.Module):
                 x_sample = feat_reshape
                 patch_id = []
             if self.use_mlp:
-                mlp = getattr(self, "mlp_%d" % feat_id)
-                x_sample = mlp(x_sample)
+                assert f"proj_{id}" in self.mlp.keys()
+                # mlp = getattr(self, "mlp_%d" % feat_id)
+                x_sample = self.mlp[f"proj_{id}"][feat_id](x_sample.view(B, -1))
+                x_sample = x_sample.reshape(B, num_patches, C)
             return_ids.append(patch_id)
             x_sample = self.l2norm(x_sample)
 
@@ -104,20 +113,18 @@ class PatchSampleLocalOneGroup(nn.Module):
         return outputs, return_ids
 
 
-class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
+class PatchSampleNonlocalOneGroup(Sampler):
     """
     Patch in different positions in different images
     """
 
-    def __init__(
-        self, use_mlp=False, init_gain=0.02, emb_ch=256, patch_w=4, search_size=40
-    ):
-        super().__init__(use_mlp, init_gain, emb_ch, patch_w)
-        self.half_ = self.patch_size // 2
+    def __init__(self, use_mlp=False, emb_ch=256, patch_w=4, search_size=40):
+        super().__init__(use_mlp=use_mlp, emb_ch=emb_ch, patch_w=patch_w)
+        self.half_ = self.patch_w // 2
         self.search_size = search_size
         self.stride = 1
 
-    def forward(self, inputs, num_patches=256, patch_ids=None):
+    def forward(self, inputs, id: str, num_patches=256, patch_ids=None):
         outputs = []
         if patch_ids is None:  # calculate the num_patches non-local keys in raw image
             # 1. sample one loc in the img
@@ -129,14 +136,14 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
             img = inputs[0]
             B, C, H, W = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
             sample_loc = [
-                random.randint(self.patch_size, H - self.patch_size),
-                random.randint(self.patch_size, W - self.patch_size),
+                random.randint(self.patch_w, H - self.patch_w),
+                random.randint(self.patch_w, W - self.patch_w),
             ]
             sample_patch = getTensorPatch(img, sample_loc, self.half_)
             locs, patches = getTensorLocs(
                 img,
                 sample_loc,
-                self.patch_size,
+                self.patch_w,
                 self.search_size,
                 self.stride,
                 img.device,
@@ -151,21 +158,22 @@ class PatchSampleNonlocalOneGroup(PatchSampleLocalOneGroup):
             patch_ids = locs.gather(1, index).to(torch.long)
         # debug_seeNonlocal(inputs[0],patch_ids,self.half_)
         # (num_patches, 2)
-        if self.use_mlp and not self.mlp_init:
-            self.create_mlp(inputs)
+        if self.use_mlp and f"proj_{id}" not in self.mlp.keys():
+            self.create_mlp(patch_ids, inputs, id)
         for feat_id, feat in enumerate(inputs):
+            B, C, H, W = feat.shape[0], feat.shape[1], feat.shape[2], feat.shape[3]
             feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)  # (B, H*W, C)
             feat_patch_loc = torch.floor_divide((patch_ids * H), 256)
             patch_id = feat_patch_loc[..., 0] * W + feat_patch_loc[..., 1]  # 256
             # patch_id shape: num_patches
-            patch_id = (
-                patch_id.to(torch.long).repeat(C, 1, 1).permute(1, 2, 0)
-            )
+            patch_id = patch_id.to(torch.long).repeat(C, 1, 1).permute(1, 2, 0)
             x_sample = feat_reshape.gather(1, patch_id)
 
             if self.use_mlp:
-                mlp = getattr(self, "mlp_%d" % feat_id)
-                x_sample = mlp(x_sample)
+                assert f"proj_{id}" in self.mlp.keys()
+                # mlp = getattr(self, "mlp_%d" % feat_id)
+                x_sample = self.mlp[f"proj_{id}"][feat_id](x_sample.view(B, -1))
+                x_sample = x_sample.reshape(B, num_patches, C)
             # return_ids.append(patch_id)
             x_sample = self.l2norm(x_sample)
 

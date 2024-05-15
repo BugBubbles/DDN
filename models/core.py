@@ -15,7 +15,36 @@ from utils import instantiate_from_config
 
 
 class ConditionedUNet(UNet):
-    pass
+    def __init__(
+        self,
+        *,
+        ch,
+        out_ch,
+        ch_mult=...,
+        num_res_blocks,
+        attn_resolutions,
+        dropout=0,
+        resamp_with_conv=True,
+        in_channels,
+        resolution,
+        use_timestep: bool = True,
+        use_linear_attn: bool = False,
+        attn_type="vanilla",
+    ):
+        super().__init__(
+            ch=ch,
+            out_ch=out_ch,
+            ch_mult=ch_mult,
+            num_res_blocks=num_res_blocks,
+            attn_resolutions=attn_resolutions,
+            dropout=dropout,
+            resamp_with_conv=resamp_with_conv,
+            in_channels=in_channels,
+            resolution=resolution,
+            use_timestep=use_timestep,
+            use_linear_attn=use_linear_attn,
+            attn_type=attn_type,
+        )
 
 
 class Restorer(pl.LightningModule):
@@ -38,7 +67,7 @@ class Restorer(pl.LightningModule):
         super().__init__()
         self.automatic_optimization = False
         self.core_unet = instantiate_from_config(unet_config)
-        self.local_sampler = instantiate_from_config(sampler_config)
+        # self.local_sampler = instantiate_from_config(sampler_config)
         self.nonlocal_sampler = instantiate_from_config(sampler_config)
         self.use_scheduler = scheduler_config is not None
         self.loss_consi_ = instantiate_from_config(lossconfig)
@@ -108,7 +137,7 @@ class Restorer(pl.LightningModule):
     def forward(self, x):
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
-        for _ in range(3):
+        for _ in range(6):
             z = self.core_unet(z)
         noise = self.decode_first_stage(z)
         x_hat = noise + x
@@ -123,17 +152,9 @@ class Restorer(pl.LightningModule):
         opt, opt_de = self.optimizers()
 
         def unet_closure():
-            loss, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="unet")
+            loss, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="train")
             self.log_dict(
                 loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
-            )
-            self.log(
-                "unetloss",
-                loss,
-                prog_bar=False,
-                logger=True,
-                on_step=False,
-                on_epoch=True,
             )
             opt.zero_grad()
             self.manual_backward(loss)
@@ -141,17 +162,17 @@ class Restorer(pl.LightningModule):
 
         def de_closure():
             loss, loss_dict = self.loss(x_hat, x, noise, *self.lambdas, stage="disc")
-            self.log_dict(
-                loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
-            )
-            self.log(
-                "discloss",
-                loss,
-                prog_bar=False,
-                logger=True,
-                on_step=False,
-                on_epoch=True,
-            )
+            # self.log_dict(
+            #     loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True
+            # )
+            # self.log(
+            #     "discloss",
+            #     loss,
+            #     prog_bar=False,
+            #     logger=True,
+            #     on_step=False,
+            #     on_epoch=True,
+            # )
             opt_de.zero_grad()
             self.manual_backward(loss)
             opt_de.step()
@@ -188,9 +209,9 @@ class Restorer(pl.LightningModule):
         loss_destrip, _, _ = self.calculate_strip_loss(x_hat, noise, x, 0.5)
         loss_penalty = F.l1_loss(noise, torch.zeros_like(noise))
         loss = (
-            lambda_loc * loss_consis.mean()
-            + lambda_layer * loss_loc
-            + lambda_consis * loss_layer
+            lambda_consis * loss_consis.mean()
+            + lambda_loc * loss_loc
+            + lambda_layer * loss_layer
             + lambda_destrip * loss_destrip
             + lambda_penalty * loss_penalty
         )
@@ -201,8 +222,6 @@ class Restorer(pl.LightningModule):
             f"{stage}/loss_consis": loss_consis.mean(),
             f"{stage}/loss_destrip": loss_destrip,
             f"{stage}/loss_penalty": loss_penalty,
-            # f"{stage}/grad_x": grad_x,
-            # f"{stage}/grad_y": grad_y,
         }
         return loss, loss_dict
 
@@ -218,11 +237,12 @@ class Restorer(pl.LightningModule):
         return loss, x_hat_grad_x, noise_grad_y
 
     def calculate_layer_loss(self, x_hat, noise, x, adv_nce_layers=[0, 3, 7, 11]):
+        # 这个在实际使用中效果是反向的，应该用得不对
         feat_x_hat = self.mom_dis(x_hat, adv_nce_layers, encode_only=True)
         feat_noise = self.mom_dis(noise, adv_nce_layers, encode_only=True)
 
-        feat_B_pool, _ = self.nonlocal_sampler(feat_x_hat, 8, None)
-        feat_N_pool, _ = self.nonlocal_sampler(feat_noise, 128, None)
+        feat_B_pool, _ = self.nonlocal_sampler(feat_x_hat, "layer_B", 8, None)
+        feat_N_pool, _ = self.nonlocal_sampler(feat_noise, "layer_N", 128, None)
 
         total_dis_loss = 0.0
         for f_b, f_r, nce_layer in zip(feat_B_pool, feat_N_pool, adv_nce_layers):
@@ -233,13 +253,14 @@ class Restorer(pl.LightningModule):
 
     def calculate_loc_loss(self, x_hat, noise, x, gen_nce_layers=[0, 2, 4, 8, 12]):
         # 对去噪得到的图像再作一次卷积提取特征图，我感觉有点喧宾夺主，反而变成训练这两个不需要有卷积网络去了
+        # 事实证明我的想法是错误的，这个卷积网络真的有效。
         feat_x_hat = self.mom_gen(x_hat, gen_nce_layers, encode_only=True)
         feat_x = self.mom_gen(x, gen_nce_layers, encode_only=True)
-        feat_b = [torch.flip(fq, [3]) for fq in feat_x_hat]
+        # feat_b = [torch.flip(fq, [3]) for fq in feat_x_hat]
 
         feat_o = feat_x
-        feat_o_pool, sample_ids = self.nonlocal_sampler(feat_o, 256, None)
-        feat_b_pool, _ = self.nonlocal_sampler(feat_b, 256, sample_ids)
+        feat_o_pool, sample_ids = self.nonlocal_sampler(feat_o, "loc_O", 256, None)
+        feat_b_pool, _ = self.nonlocal_sampler(feat_x_hat, "loc_B", 256, sample_ids)
 
         total_nce_loss = 0.0
         for f_b, f_o, layer, nce_layer in zip(
