@@ -1,4 +1,4 @@
-name: destrip
+name: ddn
 channels:
   - conda-forge
   - nvidia
