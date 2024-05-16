@@ -1,3 +1,4 @@
+from typing import Iterator
 import torch
 import torch.nn as nn
 from torch.nn import init
@@ -23,12 +24,12 @@ class Sampler(nn.Module):
         super().__init__()
         self.l2norm = Normalize(2)
         self.use_mlp = use_mlp
-        self.emb_ch = emb_ch  # hard-coded
+        self.emb_ch = emb_ch
         self.patch_w = patch_w
-        self.mlp = dict()
+        self.mlp = nn.ModuleDict()
 
     def create_mlp(self, patch_ids, inputs, id: str):
-        self.mlp[f"proj_{id}"] = []
+        self.mlp[f"proj_{id}"] = nn.ModuleList()
         for feat in inputs:
             input_nc = feat.shape[1] * patch_ids.shape[1]
             mlp = nn.Sequential(
@@ -62,7 +63,7 @@ class PatchSampleLocalOneGroup(Sampler):
     ):
         return_ids = []
         outputs = []
-        if self.use_mlp and not self.mlp_init:
+        if self.use_mlp and f"proj_{id}" not in self.mlp.keys():
             self.create_mlp(inputs)
         for feat_id, feat in enumerate(inputs):
             B, C, H, W = feat.shape[0], feat.shape[1], feat.shape[2], feat.shape[3]

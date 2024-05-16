@@ -13,7 +13,6 @@ import torch.nn as nn
 from utils import instantiate_from_config
 
 
-
 class Restorer(pl.LightningModule):
     def __init__(
         self,
@@ -169,18 +168,12 @@ class Restorer(pl.LightningModule):
         *,
         stage="train",
     ):
-        loss_loc = self.calculate_loc_loss(x_hat, noise, x)
-        loss_layer = self.calculate_layer_loss(x_hat, noise, x)
-        loss_consis = self.loss_consi_(x_hat, x)
-        loss_destrip, _, _ = self.calculate_strip_loss(x_hat, noise, x, 0.5)
-        loss_penalty = F.l1_loss(noise, torch.zeros_like(noise))
-        loss = (
-            lambda_consis * loss_consis.mean()
-            + lambda_loc * loss_loc
-            + lambda_layer * loss_layer
-            + lambda_destrip * loss_destrip
-            + lambda_penalty * loss_penalty
-        )
+        loss_loc = lambda_loc * self.calculate_loc_loss(x_hat, noise, x)
+        loss_layer = lambda_layer * self.calculate_layer_loss(x_hat, noise, x)
+        loss_consis = lambda_consis * self.loss_consi_(x_hat, x)
+        loss_destrip = lambda_destrip * self.calculate_strip_loss(x_hat, noise, x, 0.5)
+        loss_penalty = lambda_penalty * F.l1_loss(noise, torch.zeros_like(noise))
+        loss = loss_consis.mean() + loss_loc + loss_layer + loss_destrip + loss_penalty
         loss_dict = {
             f"{stage}/loss": loss,
             f"{stage}/loss_loc": loss_loc,
@@ -200,7 +193,7 @@ class Restorer(pl.LightningModule):
         loss = (1 - lambda_) * F.l1_loss(
             x_hat_grad_x, torch.zeros_like(x_hat_grad_x)
         ) + lambda_ * F.l1_loss(noise_grad_y, torch.zeros_like(noise_grad_y))
-        return loss, x_hat_grad_x, noise_grad_y
+        return loss
 
     def calculate_layer_loss(self, x_hat, noise, x, adv_nce_layers=[0, 3, 7, 11]):
         # 这个在实际使用中效果是反向的，应该用得不对
@@ -245,7 +238,9 @@ class Restorer(pl.LightningModule):
             betas=(0.5, 0.9),
         )
         opt_de = torch.optim.Adam(
-            list(self.mom_dis.parameters()) + list(self.mom_gen.parameters()),
+            list(self.mom_dis.parameters())
+            + list(self.mom_gen.parameters())
+            + list(self.nonlocal_sampler.parameters()),
             lr=lr,
             betas=(0.5, 0.9),
         )
@@ -272,7 +267,6 @@ class Restorer(pl.LightningModule):
         x = x.to(self.device)
         if not only_inputs:
             x_hat, noise = self(x)
-            _, grad_x, grad_y = self.calculate_strip_loss(x_hat, noise, x, 0.5)
             if x.shape[1] > 3:
                 # colorize with random projection
                 assert x_hat.shape[1] > 3

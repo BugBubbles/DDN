@@ -8,6 +8,7 @@ from modules.blocks.model import (
     Upsample,
     ResnetBlock,
 )
+import copy
 
 
 class ConditionedUNet(UNet):
@@ -41,8 +42,19 @@ class ConditionedUNet(UNet):
             use_linear_attn=use_linear_attn,
             attn_type=attn_type,
         )
+        self.merger = []
+        self.cond_down = copy.deepcopy(self.down)
+        self.conv_cond_in = torch.nn.Conv2d(
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1
+        )
+        in_ch_mult = (1,) + tuple(ch_mult)
+        for skip_id in range(self.num_resolutions):
+            block_in = ch * in_ch_mult[skip_id]
+            self.merger.append(
+                MergeBlock(block_in, block_in, block_in, resamp_with_conv, dropout)
+            )
 
-    def forward(self, x, t=None, context=None):
+    def forward(self, x, conds, t=None, context=None):
         # assert x.shape[2] == x.shape[3] == self.resolution
         if context is not None:
             # assume aligned context, cat along channel axis
@@ -59,14 +71,18 @@ class ConditionedUNet(UNet):
 
         # downsampling
         hs = [self.conv_in(x)]
+        cs = [self.conv_cond_in(conds)]
+        emb_c = None
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
+                c = self.down[i_level].block[i_block](cs[-1], emb_c)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
                 hs.append(h)
             if i_level != self.num_resolutions - 1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
+                cs.append(self.cond_down[i_level].downsample(cs[-1]))
 
         # middle
         h = hs[-1]
@@ -77,8 +93,9 @@ class ConditionedUNet(UNet):
         # upsampling
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
+                merge_h = self.skip_cond(hs.pop(), cs.pop(), i_block)
                 h = self.up[i_level].block[i_block](
-                    torch.cat([h, hs.pop()], dim=1), temb
+                    torch.cat([h, merge_h], dim=1), temb
                 )
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
@@ -91,11 +108,12 @@ class ConditionedUNet(UNet):
         h = self.conv_out(h)
         return h
 
-    def skip_cond(self, skip_inputs, skip_conds):
+    def skip_cond(self, skip_inputs, skip_conds, idx):
         """
         This block was inspired by 'SCEdit: Efficient and Controllable Image Diffusion Generation via Skip Connection Editing', see Figure 4
         """
         assert skip_inputs.shape == skip_conds.shape
+        return self.merger[idx](skip_inputs, skip_conds)
 
 
 class MergeBlock(UNet):
@@ -119,7 +137,7 @@ class MergeBlock(UNet):
         self.in_channels = in_channels
         self.out_ch = out_ch
         self.ch_mult = ch_mult
-        self.temb_ch = emb_ch * 4
+        self.temb_ch = emb_ch * ch_mult[-1]
 
         self.conv_inputs = [nn.Conv2d(in_channels, in_channels, 3, padding=1)]
         self.conv_conds = [nn.Conv2d(in_channels, in_channels, 3, padding=1)]
@@ -153,16 +171,31 @@ class MergeBlock(UNet):
         self.conv_out = []
         out_ch_mult = (ch_mult[-1],) + ch_mult[::-1]
         for last_id, now_id in zip(out_ch_mult, ch_mult[::-1]):
+            # 因为有跳步连接，因此通道数乘2
             self.conv_out.append(
                 nn.ModuleList(
                     [
-                        nn.Conv2d(emb_ch * last_id, emb_ch * now_id, 3, padding=1),
-                        Upsample(emb_ch * last_id, resamp_with_conv),
+                        nn.Conv2d(
+                            2 * emb_ch * last_id, 2 * emb_ch * now_id, 3, padding=1
+                        ),
+                        Upsample(2 * emb_ch * last_id, resamp_with_conv),
                     ]
                 )
             )
 
-        self.conv_out.append([nn.Conv2d(out_ch, out_ch, 3, padding=1)])
+        self.conv_out.append([nn.Conv2d(2 * out_ch, out_ch, 3, padding=1)])
 
     def forward(self, inputs, conds):
-        pass
+        hs = []
+        cs = conds
+        hs.append(inputs)
+        for inputs_layer, conds_layer in zip(self.conv_inputs, self.conv_conds):
+            cs = conds_layer(cs)
+            # 采用逐层卷积直接求和融合
+            h = inputs_layer(hs[-1]) + cs
+            hs.append(h)
+
+        h = self.mid(hs[-1])
+        h = nonlinearity(h)
+        for conv_out in self.conv_out:
+            h = conv_out(torch.cat([h, hs.pop()], dim=1))

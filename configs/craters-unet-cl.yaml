@@ -5,7 +5,7 @@ model:
     ckpt_path:
     monitor: 'validate/loss'
     input_key: 'image'
-    lambdas: [1,1000,10,1, 10]
+    lambdas: [10,0,0,10, 10]
 
     lossconfig:
       target: modules.losses.SSIMLoss
@@ -20,7 +20,7 @@ model:
       params:
         embed_dim: 4
         monitor: "val/rec_loss"
-        ckpt_path: /disk527/Datadisk/xdy_cbf/pretrained/models/first_stage_models/kl-32x32x8/epoch=000011-v1.ckpt
+        ckpt_path: /disk527/Datadisk/xdy_cbf/pretrained/models/first_stage_models/kl-32x32x8/epoch=000018.ckpt
         ddconfig:
           double_z: True
           z_channels: 8
@@ -36,7 +36,7 @@ model:
           target: torch.nn.Identity
 
     unet_config:
-      target: models.core.ConditionedUNet
+      target: modules.blocks.model.UNet
       params:
         resolution: 32
         ch: 8  # for latent channels
@@ -44,7 +44,7 @@ model:
         out_ch: 4
         num_res_blocks: 2
         attn_resolutions: [ ]
-        ch_mult: [1,2,4]
+        ch_mult: [1,2,4, 4]
         use_timestep: False
     
     # for discriminator and generator configuration
@@ -54,9 +54,9 @@ model:
     
     sampler_config:
       target: modules.patcher.sampler.PatchSampleNonlocalOneGroup
-      # params:
-      #   use_mlp: True
-      #   patch_w: 4
+      params:
+        use_mlp: True
+        patch_w: 8
 
 
     scheduler_config: # 10000 warmup steps
@@ -71,7 +71,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 15
+    batch_size: 24
     train:
       target: data.crater.DTM_Train
       params:
@@ -108,7 +108,7 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 200
+        batch_frequency: 5000
         max_images: 8
         increase_log_steps: False
 
