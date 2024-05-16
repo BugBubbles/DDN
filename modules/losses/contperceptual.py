@@ -1,6 +1,6 @@
 """https://github.com/richzhang/PerceptualSimilarity/blob/master/lpips/lpips.py"""
 from __future__ import absolute_import
-from taming.modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
+from modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
 import torch
 import torch.nn as nn
 import torch.nn

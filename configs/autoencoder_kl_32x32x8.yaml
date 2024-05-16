@@ -1,12 +1,12 @@
 model:
   base_learning_rate: 4.5e-6
-  target: ldm.models.autoencoder.AutoencoderKL
+  target: models.autoencoder.AutoencoderKL
   params:
     monitor: "val/rec_loss"
     embed_dim: 4
     ckpt_path: /home/xdy_cbf/CODE_cbf/latent-diffusion/logs/2024-05-07T09-56-27_craters-ldm-kl-f8/checkpoints/last.ckpt
     lossconfig:
-      target: ldm.modules.losses.LPIPSWithDiscriminator
+      target: modules.losses.LPIPSWithDiscriminator
       params:
         disc_start: 50001
         kl_weight: 0.000001
@@ -31,7 +31,7 @@ data:
     batch_size: 7
     wrap: True
     train:
-      target: ldm.data.crater.DTM_Train
+      target: data.crater.DTM_Train
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 4
@@ -40,7 +40,7 @@ data:
         crop_part: [4,4]
 
     validation:
-      target: ldm.data.crater.DTM_Validate
+      target: data.crater.DTM_Validate
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 4
@@ -51,7 +51,7 @@ data:
         augment_t: False
     
     test:
-      target: ldm.data.crater.DTM_Test
+      target: data.crater.DTM_Test
       params:
         db_dir: /disk527/Datadisk/xdy_cbf/lunar_crater/textures
         channels: 4

@@ -2,7 +2,7 @@ import numpy as np
 from os.path import join
 from torch.utils.data import Dataset
 from PIL import Image
-import ldm.data.vfitransforms as vt
+import data.vfitransforms as vt
 
 
 class Kaguyu(Dataset):

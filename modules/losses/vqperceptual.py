@@ -3,9 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 from einops import repeat
 
-from taming.modules.discriminator.model import NLayerDiscriminator, weights_init
-from taming.modules.losses.lpips import LPIPS
-from taming.modules.losses.vqperceptual import hinge_d_loss, vanilla_d_loss
+from modules.discriminator.model import NLayerDiscriminator, weights_init
+from modules.losses.lpips import LPIPS
 
 
 def hinge_d_loss_with_exemplar_weights(logits_real, logits_fake, weights):
@@ -165,3 +164,16 @@ class VQLPIPSWithDiscriminator(nn.Module):
                    "{}/logits_fake".format(split): logits_fake.detach().mean()
                    }
             return d_loss, log
+
+def hinge_d_loss(logits_real, logits_fake):
+    loss_real = torch.mean(F.relu(1. - logits_real))
+    loss_fake = torch.mean(F.relu(1. + logits_fake))
+    d_loss = 0.5 * (loss_real + loss_fake)
+    return d_loss
+
+
+def vanilla_d_loss(logits_real, logits_fake):
+    d_loss = 0.5 * (
+        torch.mean(torch.nn.functional.softplus(-logits_real)) +
+        torch.mean(torch.nn.functional.softplus(logits_fake)))
+    return d_loss
